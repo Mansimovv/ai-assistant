@@ -216,3 +216,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# The Python `lib/` rule above must not hide the web app's lib/ folder.
+!web/lib/
