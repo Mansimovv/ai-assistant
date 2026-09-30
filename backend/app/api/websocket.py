@@ -51,9 +51,11 @@ async def device_socket(websocket: WebSocket, devices: DeviceManagerDep, setting
         logger.warning("Device %s announced unknown capabilities: %s", device.id, sorted(ignored))
 
     await devices.register(device)
-    connection = AgentConnection(device.id, device.name, device.type, accepted, websocket)
+    connection = AgentConnection(device.id, device.name, device.type, accepted, websocket, message.apps)
     agent_manager.connect(connection)
-    logger.info("Device %s connected with capabilities: %s", device.id, accepted)
+    logger.info(
+        "Device %s connected with capabilities: %s (%d apps)", device.id, accepted, len(message.apps)
+    )
     try:
         await websocket.send_json({"type": "registered", "capabilities": accepted})
         async for raw in websocket.iter_text():

@@ -14,6 +14,8 @@ class Settings(BaseSettings):
     app_env: str = "development"
     # The assistant's display name. Change it here (or via APP_NAME) to rename it everywhere.
     app_name: str = "Assistant"
+    # Who the assistant is talking to, used in the system prompt.
+    owner_name: str = "the owner"
 
     openai_api_key: SecretStr | None = None
     openai_model: str = "gpt-5.4-mini"
@@ -21,7 +23,8 @@ class Settings(BaseSettings):
     # Voice (OpenAI Realtime). The mini model is ~3x cheaper per audio minute.
     realtime_model: str = "gpt-realtime-2.1-mini"
     realtime_voice: str = "marin"
-    realtime_transcribe_model: str = "gpt-4o-mini-transcribe"
+    # The larger transcription model is noticeably better at Azerbaijani and at names.
+    realtime_transcribe_model: str = "gpt-4o-transcribe"
     # Spoken language hint for transcription, e.g. "az", "en", "tr".
     voice_language: str = "az"
 

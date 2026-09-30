@@ -13,9 +13,11 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import difflib
 import json
 import logging
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -30,10 +32,71 @@ DEFAULT_TIMEOUT = 10
 COMMAND_TIMEOUT = 15
 OUTPUT_LIMIT = 4000
 VERIFY_ATTEMPTS = 6  # ~3 seconds
+APP_FOLDERS = ("/Applications", "/System/Applications", "/Applications/Utilities")
+
+# Spoken or typed shortcuts that fuzzy matching alone would not get right.
+APP_ALIASES = {
+    "vscode": "Visual Studio Code",
+    "vs code": "Visual Studio Code",
+    "code": "Visual Studio Code",
+    "chrome": "Google Chrome",
+    "brauzer": "Safari",
+    "browser": "Safari",
+}
 
 
 def run(command: list[str], timeout: int = DEFAULT_TIMEOUT) -> subprocess.CompletedProcess[str]:
     return subprocess.run(command, capture_output=True, text=True, timeout=timeout)
+
+
+def installed_apps() -> list[str]:
+    """Every application on this Mac, by display name."""
+    names: set[str] = set()
+    for folder in APP_FOLDERS:
+        directory = Path(folder)
+        if not directory.is_dir():
+            continue
+        for app in directory.glob("*.app"):
+            names.add(app.stem)
+        for app in directory.glob("*/*.app"):  # e.g. /Applications/Utilities/*
+            names.add(app.stem)
+    home_apps = Path.home() / "Applications"
+    if home_apps.is_dir():
+        names.update(app.stem for app in home_apps.glob("*.app"))
+    return sorted(names)
+
+
+def resolve_app(name: str) -> str:
+    """Turn what the user said into a real application name.
+
+    "termiusu", "termius", "TERMIUS" -> "Termius". Without this, a small spelling
+    difference makes the whole request fail.
+    """
+    wanted = name.strip().strip('"').lower()
+    apps = installed_apps()
+    lookup = {app.lower(): app for app in apps}
+
+    if wanted in lookup:
+        return lookup[wanted]
+    if wanted in APP_ALIASES and APP_ALIASES[wanted].lower() in lookup:
+        return lookup[APP_ALIASES[wanted].lower()]
+
+    # Azerbaijani glues suffixes onto names: "termiusu", "safarini", "app storeni".
+    trimmed = re.sub(r"(nı|ni|nu|nü|yı|yi|yu|yü|ı|i|u|ü)$", "", wanted)
+    for candidate in (wanted, trimmed):
+        if candidate in lookup:
+            return lookup[candidate]
+        starts = [app for app in apps if app.lower().startswith(candidate)]
+        if len(starts) == 1:
+            return starts[0]
+        contains = [app for app in apps if candidate in app.lower()]
+        if len(contains) == 1:
+            return contains[0]
+
+    close = difflib.get_close_matches(wanted, [app.lower() for app in apps], n=1, cutoff=0.7)
+    if close:
+        return lookup[close[0]]
+    return name  # let macOS decide, and report its error
 
 
 def is_running(app: str) -> bool:
@@ -55,17 +118,35 @@ def clip(text: str) -> str:
 
 
 async def open_app(name: str) -> tuple[bool, Any, str | None, bool]:
-    result = run(["open", "-a", name])
+    app = resolve_app(name)
+    result = run(["open", "-a", app])
     if result.returncode != 0:
-        return False, None, clip(result.stderr.strip()) or f"Could not open {name}", True
+        return False, {"app": app}, clip(result.stderr.strip()) or f"Could not open {app}", True
+
+    started = False
     for _ in range(VERIFY_ATTEMPTS):
-        if is_running(name):
-            return True, {"app": name, "running": True}, None, True
+        if is_running(app):
+            started = True
+            break
         await asyncio.sleep(0.5)
-    return False, {"app": name, "running": False}, f"{name} did not start", True
+    if not started:
+        return False, {"app": app, "running": False}, f"{app} did not start", True
+
+    # Some apps launch and quit again (login needed, crash). Check it is still there,
+    # so we never report a window the user cannot see.
+    await asyncio.sleep(1.5)
+    if not is_running(app):
+        return (
+            False,
+            {"app": app, "running": False},
+            f"{app} opened and closed again immediately",
+            True,
+        )
+    return True, {"app": app, "running": True, "asked_for": name}, None, True
 
 
 async def close_app(name: str) -> tuple[bool, Any, str | None, bool]:
+    name = resolve_app(name)
     if not is_running(name):
         return True, {"app": name, "running": False, "note": "was not running"}, None, True
     result = run(["osascript", "-e", f'quit app "{name}"'])
@@ -79,7 +160,13 @@ async def close_app(name: str) -> tuple[bool, Any, str | None, bool]:
 
 
 async def app_status(name: str) -> tuple[bool, Any, str | None, bool]:
-    return True, {"app": name, "running": is_running(name)}, None, True
+    app = resolve_app(name)
+    return True, {"app": app, "running": is_running(app)}, None, True
+
+
+async def list_apps() -> tuple[bool, Any, str | None, bool]:
+    apps = installed_apps()
+    return True, {"count": len(apps), "apps": apps}, None, True
 
 
 async def docker_status() -> tuple[bool, Any, str | None, bool]:
@@ -144,6 +231,30 @@ async def run_command(command: str) -> tuple[bool, Any, str | None, bool]:
     return result.returncode == 0, data, None if result.returncode == 0 else f"exit code {result.returncode}", True
 
 
+async def run_in_terminal(command: str) -> tuple[bool, Any, str | None, bool]:
+    """Open Terminal and run a command there, visibly.
+
+    This is how interactive things work: ssh into a server, tail a log, run a REPL.
+    The output stays on screen for the user; we only confirm the window opened.
+    """
+    script = (
+        'tell application "Terminal"\n'
+        '  activate\n'
+        f'  do script "{command.replace(chr(92), chr(92) * 2).replace(chr(34), chr(92) + chr(34))}"\n'
+        'end tell'
+    )
+    result = run(["osascript", "-e", script], timeout=DEFAULT_TIMEOUT)
+    if result.returncode != 0:
+        error = clip(result.stderr.strip())
+        if "-1743" in error or "not authorized" in error.lower():
+            error = (
+                "macOS blocked it: allow this agent to control Terminal in "
+                "System Settings > Privacy & Security > Automation, then try again"
+            )
+        return False, {"command": command}, error or "Could not open Terminal", True
+    return True, {"command": command, "note": "running in a visible Terminal window"}, None, False
+
+
 HANDLERS = {
     "open_app": open_app,
     "close_app": close_app,
@@ -152,7 +263,9 @@ HANDLERS = {
     "git_status": git_status,
     "find_files": find_files,
     "open_path": open_path,
+    "list_apps": list_apps,
     "run_command": run_command,
+    "run_in_terminal": run_in_terminal,
 }
 
 
@@ -183,6 +296,7 @@ async def session(url: str, device_id: str, name: str, token: str | None) -> Non
                     "type": "register",
                     "device": {"id": device_id, "name": name, "type": "mac"},
                     "capabilities": sorted(HANDLERS),
+                    "apps": installed_apps(),
                     "token": token,
                 }
             )

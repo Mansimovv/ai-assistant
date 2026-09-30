@@ -40,6 +40,7 @@ class Assistant:
         actions: DeviceActions,
         pending: PendingActions,
         app_name: str,
+        owner_name: str = "the owner",
     ) -> None:
         self._router = router
         self._conversations = conversations
@@ -47,6 +48,7 @@ class Assistant:
         self._actions = actions
         self._pending = pending
         self._app_name = app_name
+        self._owner_name = owner_name
 
     async def send(
         self,
@@ -101,15 +103,18 @@ class Assistant:
             raise ActionNotFoundError(action_id)
 
     async def _system_message(self) -> ChatMessage:
-        return ChatMessage(role="system", content=build_system_prompt(self._app_name, await self._devices.summary()))
+        return ChatMessage(
+            role="system",
+            content=build_system_prompt(self._app_name, await self._devices.summary(), self._owner_name),
+        )
 
     # --- voice ---------------------------------------------------------------
     # Voice uses the same tools, the same risk gating and the same conversation.
 
-    async def voice_context(self) -> tuple[str, list[ToolSpec]]:
-        """Instructions and tools for a new realtime session."""
-        system = build_system_prompt(self._app_name, await self._devices.summary())
-        return system, self._router.tool_specs()
+    async def voice_context(self) -> tuple[str, list[ToolSpec], list[str]]:
+        """Instructions, tools and app names (to help transcription) for a voice session."""
+        system = build_system_prompt(self._app_name, await self._devices.summary(), self._owner_name)
+        return system, self._router.tool_specs(), self._devices.app_names()
 
     async def run_voice_tool(self, name: str, arguments: dict[str, Any]) -> VoiceToolResult:
         requested: list[RequestedAction] = []

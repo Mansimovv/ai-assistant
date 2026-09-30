@@ -81,7 +81,9 @@ def get_assistant(
     pending: Annotated[PendingActions, Depends(get_pending_actions)],
     settings: SettingsDep,
 ) -> Assistant:
-    return Assistant(router, conversations, devices, actions, pending, settings.app_name)
+    return Assistant(
+        router, conversations, devices, actions, pending, settings.app_name, settings.owner_name
+    )
 
 
 AssistantDep = Annotated[Assistant, Depends(get_assistant)]

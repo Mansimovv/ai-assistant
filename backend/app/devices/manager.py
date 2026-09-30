@@ -46,10 +46,21 @@ class DeviceManager:
         for device in await self.list_devices():
             if device.status is DeviceStatus.ONLINE:
                 can = ", ".join(device.capabilities) or "nothing yet"
-                lines.append(f"- {device.name} (type={device.type}, id={device.id}) - online; can: {can}")
+                connection = self._agents.get(device.id)
+                apps = f"; {len(connection.apps)} apps installed" if connection and connection.apps else ""
+                lines.append(
+                    f"- {device.name} (type={device.type}, id={device.id}) - online; can: {can}{apps}"
+                )
             else:
                 lines.append(f"- {device.name} (type={device.type}, id={device.id}) - offline")
         return "\n".join(lines)
+
+    def app_names(self) -> list[str]:
+        """Application names across online devices, used to bias speech recognition."""
+        names: set[str] = set()
+        for connection in self._agents.connections():
+            names.update(connection.apps)
+        return sorted(names)
 
     def _to_schema(self, device: Device) -> DeviceRead:
         connection = self._agents.get(device.id)

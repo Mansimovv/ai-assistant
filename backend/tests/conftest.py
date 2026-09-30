@@ -82,6 +82,13 @@ def connected_mac() -> tuple[DeviceActions, FakeSocket]:
     bus = CommandBus(agents)
     socket = FakeSocket(bus, CommandResult(ok=True, data={"running": True}, verified=True))
     agents.connect(
-        AgentConnection("mac", "MacBook", "mac", ["open_app", "docker_status", "run_command"], socket)  # type: ignore[arg-type]
+        AgentConnection(  # type: ignore[arg-type]
+            "mac",
+            "MacBook",
+            "mac",
+            ["open_app", "docker_status", "run_command", "run_in_terminal"],
+            socket,
+            ["Termius", "Safari"],
+        )
     )
     return DeviceActions(agents, bus), socket

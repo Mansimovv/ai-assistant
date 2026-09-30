@@ -27,6 +27,8 @@ class RegisterMessage(BaseModel):
     type: Literal["register"]
     device: DeviceRegistration
     capabilities: list[str] = Field(default_factory=list)
+    # Application names on the device: used to recognise spoken app names.
+    apps: list[str] = Field(default_factory=list, max_length=500)
     token: str | None = None
 
 

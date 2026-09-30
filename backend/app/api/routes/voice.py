@@ -28,9 +28,9 @@ async def create_voice_session(assistant: AssistantDep, voice: VoiceServiceDep) 
     The real API key never leaves the backend. The session is configured with the
     current device list and the same tools the text path offers.
     """
-    instructions, tools = await assistant.voice_context()
+    instructions, tools, vocabulary = await assistant.voice_context()
     try:
-        return await voice.create_session(instructions, tools)
+        return await voice.create_session(instructions, tools, vocabulary)
     except AIServiceNotConfiguredError as exc:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"Voice is not configured: {exc}") from exc
     except AIServiceError as exc:

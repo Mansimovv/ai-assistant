@@ -19,11 +19,16 @@ from app.ai.service import AIServiceError, AIServiceNotConfiguredError, ToolSpec
 logger = logging.getLogger(__name__)
 
 VOICE_GUIDANCE = """
-You are speaking out loud, so keep answers to one or two short sentences. Never read
-JSON, paths or code aloud; summarise instead. Say what you are about to do only when an
-action takes a while. If an action needs confirmation, say so in one sentence and stop;
-the user confirms on screen.
+You are speaking out loud, in Azerbaijani. Keep answers to one or two short sentences.
+Never read JSON, paths or code aloud; summarise instead. If you did not clearly hear what
+was said, say so and ask them to repeat - never guess an action from a noisy transcript.
+If an action needs confirmation, say so in one sentence and stop; the user confirms on
+screen.
 """
+
+# Speech recognition mishears names like "Termius" unless it knows to expect them.
+TRANSCRIPTION_HINT = "Azərbaycan dilində danışıq. Cihaz və proqram adları: {names}."
+VOCABULARY_LIMIT = 60
 
 
 class VoiceSession(BaseModel):
@@ -47,9 +52,17 @@ class VoiceService:
         self._transcribe_model = transcribe_model
         self._language = language
 
-    async def create_session(self, instructions: str, tools: list[ToolSpec]) -> VoiceSession:
+    async def create_session(
+        self, instructions: str, tools: list[ToolSpec], vocabulary: list[str] | None = None
+    ) -> VoiceSession:
         if self._client is None:
             raise AIServiceNotConfiguredError("OPENAI_API_KEY is not set")
+
+        transcription: dict[str, object] = {"model": self._transcribe_model, "language": self._language}
+        if vocabulary:
+            transcription["prompt"] = TRANSCRIPTION_HINT.format(
+                names=", ".join(vocabulary[:VOCABULARY_LIMIT])
+            )
 
         try:
             secret = await self._client.realtime.client_secrets.create(
@@ -60,7 +73,7 @@ class VoiceService:
                     "output_modalities": ["audio"],
                     "audio": {
                         "input": {
-                            "transcription": {"model": self._transcribe_model, "language": self._language},
+                            "transcription": transcription,
                             "turn_detection": {"type": "server_vad", "create_response": True},
                         },
                         "output": {"voice": self._voice},
@@ -80,5 +93,10 @@ class VoiceService:
             logger.exception("Could not create a realtime session")
             raise AIServiceError("Could not start a voice session") from exc
 
-        logger.info("Voice session created (model=%s, tools=%d)", self._model, len(tools))
+        logger.info(
+            "Voice session created (model=%s, tools=%d, vocabulary=%d)",
+            self._model,
+            len(tools),
+            len(vocabulary or []),
+        )
         return VoiceSession(client_secret=secret.value, expires_at=secret.expires_at, model=self._model)

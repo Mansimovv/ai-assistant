@@ -18,11 +18,13 @@ class AgentConnection:
         device_type: str,
         capabilities: list[str],
         websocket: WebSocket,
+        apps: list[str] | None = None,
     ) -> None:
         self.device_id = device_id
         self.device_name = device_name
         self.device_type = device_type
         self.capabilities = capabilities
+        self.apps = apps or []
         self._websocket = websocket
 
     async def send(self, message: dict[str, Any]) -> None:

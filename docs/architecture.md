@@ -83,9 +83,9 @@ Consequences:
 
 | Risk | Examples | Behaviour |
 | --- | --- | --- |
-| low | `app_status`, `docker_status`, `open_app` | runs immediately |
+| low | `app_status`, `docker_status`, `open_app`, `list_apps`, `find_files` | runs immediately |
 | medium | `close_app` | runs immediately |
-| high | `run_command` | **never** runs on the model's word alone |
+| high | `run_command`, `run_in_terminal` | **never** runs on the model's word alone |
 
 A high-risk call is parked as a pending action. The model is told to show the user
 exactly what it would do; the client renders a confirm/cancel card; only
@@ -116,6 +116,21 @@ browser mic ──WebRTC──► OpenAI Realtime ──tool call──► brows
 
 A session's tool list is a snapshot from when it was created; a device that connects
 mid-session is not offered until the next session.
+
+## Understanding informal Azerbaijani
+
+Most "it did not understand me" problems were not the model's size but missing context,
+so they are fixed in three places rather than by paying for a bigger model:
+
+- **The system prompt** (`ai/prompts.py`) states that the user writes spoken Azerbaijani
+  without diacritics, maps common phrasings to intents ("gir" → connect, "ac gorum" → open
+  and show), forbids answering in English, and requires asking for a repeat instead of
+  guessing from a garbled voice transcript.
+- **The agent** resolves application names against what is installed, stripping
+  Azerbaijani suffixes ("termiusu" → "Termius"), so a spelling difference cannot fail a
+  request.
+- **Voice transcription** is given the device's real application names as a hint, which is
+  what stops "Termius" from arriving as "Termini".
 
 ## Conversation model
 

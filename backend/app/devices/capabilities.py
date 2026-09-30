@@ -43,6 +43,15 @@ class RunCommandParameters(ToolParameters):
     command: str = Field(description="Shell command to run on the device.")
 
 
+class RunInTerminalParameters(ToolParameters):
+    command: str = Field(
+        description=(
+            "Command to run in a visible Terminal window, e.g. 'ssh user@host'. "
+            "Use this for anything interactive or anything the user wants to watch."
+        )
+    )
+
+
 class Capability(BaseModel):
     name: str
     description: str
@@ -88,6 +97,21 @@ CAPABILITIES: dict[str, Capability] = {
             name="open_path",
             description="Open a file, folder or URL with the default application.",
             parameters=OpenPathParameters,
+        ),
+        Capability(
+            name="list_apps",
+            description="List the applications installed on the device.",
+            parameters=ToolParameters,
+        ),
+        Capability(
+            name="run_in_terminal",
+            description=(
+                "Open Terminal on the device and run a command there, visibly, so the user can "
+                "see and keep using it. This is how to connect to a server (ssh), watch logs, or "
+                "run anything interactive. The user must confirm it before it runs."
+            ),
+            parameters=RunInTerminalParameters,
+            risk=Risk.HIGH,
         ),
         Capability(
             name="run_command",

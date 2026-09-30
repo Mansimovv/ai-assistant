@@ -16,8 +16,12 @@ you one page to open. No iPhone app yet.
 
 - **Talk normally, by text or by voice.** "Docker işləyir?" → it checks the real Docker on
   your Mac and answers. The microphone button opens a live, interruptible voice session.
-- **Act on the Mac.** Open/quit apps (verified afterwards), Docker and Git status, find
-  files, open folders and URLs, run shell commands.
+- **Act on the Mac.** Open/quit apps (verified afterwards, and matched from whatever you
+  called them — "termiusu ac" finds Termius), Docker and Git status, find files, open
+  folders and URLs, run shell commands, and run commands in a **visible Terminal** window
+  for ssh or anything interactive.
+- **Understand how you actually write.** Informal Azerbaijani without diacritics, typos and
+  voice transcripts; it asks you to repeat rather than guessing.
 - **Refuse to lie.** It may only claim what a tool result says. A failure, a timeout or an
   offline device is reported as such.
 - **Ask before dangerous things.** Shell commands are shown to you with a confirm button
@@ -120,6 +124,7 @@ nothing can act — the agent just keeps retrying harmlessly.
 | `REALTIME_MODEL` | Voice model, default `gpt-realtime-2.1-mini` (the cheap one) |
 | `REALTIME_VOICE` | Voice, default `marin` |
 | `VOICE_LANGUAGE` | Spoken language hint, default `az` |
+| `OWNER_NAME` | Who the assistant is talking to |
 | `CORS_ORIGINS` | JSON list of allowed browser origins |
 
 `web/.env.local` (optional): `NEXT_PUBLIC_API_URL`, the backend URL. It is public by

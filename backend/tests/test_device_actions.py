@@ -12,8 +12,10 @@ def test_only_online_capabilities_become_tools(connected_mac) -> None:
 
     names = {spec.name for spec in devices.specs()}
 
-    assert names == {"mac_open_app", "mac_docker_status", "mac_run_command"}
+    assert names == {"mac_open_app", "mac_docker_status", "mac_run_command", "mac_run_in_terminal"}
     assert devices.risk("mac_run_command") is Risk.HIGH
+    # Opening a visible Terminal can do anything a shell can, so it is gated too.
+    assert devices.risk("mac_run_in_terminal") is Risk.HIGH
     assert devices.risk("mac_open_app") is Risk.LOW
     assert devices.knows("mac_open_app")
     assert not devices.knows("mac_close_app")  # not announced by this agent

@@ -49,7 +49,20 @@ It reconnects by itself if the backend restarts.
 | `git_status` | low | Branch and uncommitted changes of a repository |
 | `find_files` | low | Find files by name in a folder (max depth 4) |
 | `open_path` | low | Open a file, folder or URL |
-| `run_command` | **high** | Any shell command — the backend requires the user to confirm it first |
+| `list_apps` | low | Every application installed on this Mac |
+| `run_in_terminal` | **high** | Open Terminal and run a command **visibly** — ssh to a server, tail logs, anything interactive |
+| `run_command` | **high** | Any shell command, invisibly (output returned to the assistant) |
+
+## Application names
+
+The agent matches whatever the user said against the applications actually installed:
+`termiusu` → `Termius`, `app storeni` → `App Store`, `vs code` → `Visual Studio Code`.
+Azerbaijani suffixes are stripped, then exact, prefix, substring and fuzzy matching are
+tried in that order. The resolved name is reported back, and the app list is sent to the
+backend on connect so speech recognition expects those names too.
+
+An app that opens and immediately quits (needs login, crashes) is reported as a failure —
+never as "opened".
 
 Every result carries `ok` and, where the agent checked the real state afterwards,
 `verified: true`. A failure is returned as a failure; the agent never reports success
@@ -59,7 +72,8 @@ it did not observe.
 
 The first time some capabilities run, macOS asks for permission:
 
-- `close_app` sends an Apple Event → **Automation** permission.
+- `close_app` and `run_in_terminal` send Apple Events → **Automation** permission
+  (Terminal is listed separately from other apps).
 - Future screen/input capabilities will need **Screen Recording** and **Accessibility**.
 
 Grant these in System Settings → Privacy & Security. They are tied to the program's
