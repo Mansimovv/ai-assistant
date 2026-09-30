@@ -1,121 +1,152 @@
 # Architecture
 
-Personal AI is one FastAPI application (the "brain"), a PostgreSQL database, a web
-dashboard, and — later — small agents running on each device.
+One brain, many devices. The backend holds all reasoning, memory and policy; devices
+run small agents that execute actions and report real results.
 
 ```text
-                    PERSONAL AI
-                         |
-                  ┌──────▼──────┐
-                  │  AI Backend │
-                  │   FastAPI   │
-                  └──────┬──────┘
-                         |
-          ┌──────────────┼──────────────┐
-          |              |              |
-       AI Core         Tools         Devices
-          |              |              |
-       OpenAI         Tool Registry   Device Agents
-          |              |              |
-       Memory         Browser         Mac Agent
-       Planner        Files           iPhone
-       Router         Terminal       Future devices
+   Web client (browser)              Mac agent (agents/mac/agent.py)
+          │  HTTP                              │  WebSocket (outbound only)
+          └───────────────► BRAIN (FastAPI) ◄───┘
+                                │
+                     PostgreSQL (conversations, audit, memory)
 ```
+
+Everything runs locally for now: backend on `localhost:8000`, web on `localhost:3000`,
+Postgres in Docker. Moving the brain to a server later changes URLs and authentication,
+not the architecture.
+
+## What happens on one message
+
+```text
+"Mac-da VS Code-u aç"
+  │
+  ▼
+POST /api/v1/chat ── Assistant ── loads the shared conversation + device list
+                        │
+                        ▼
+                    AIRouter (agent loop)
+                        │  model sees: history + online devices + their capabilities as tools
+                        ▼
+                    tool call: mac_open_app {"name": "Visual Studio Code"}
+                        │
+                        ▼
+                    DeviceActions → CommandBus → WebSocket → Mac agent
+                        │                                       │ open -a, then verify
+                        ▼                                       ▼
+                    {"ok": true, "verified": true} ◄────────────┘
+                        │
+                        ▼
+                    model gets the real result → final answer → saved + audited
+```
+
+The model never reports success on its own: the only thing it can tell the user is what
+a tool result says. A timeout or a missing device is a failure, not a success.
 
 ## Backend modules (`backend/app/`)
 
 | Module | Responsibility |
 | --- | --- |
-| `api/routes/` | HTTP endpoints. Thin: validate input, call a service, map errors to status codes. |
-| `api/websocket.py` | `/ws/devices`, the real-time channel device agents connect to. |
-| `api/deps.py` | Dependency providers: the one place implementations are wired together (and swapped in tests). |
-| `core/` | Settings (`config.py`), logging, security primitives (`security.py`). |
-| `ai/service.py` | `AIService` interface + `OpenAIService`. Nothing else imports the OpenAI SDK. |
-| `ai/router.py` | `AIRouter`, the entry point for every user message. |
-| `ai/planner.py` | `Plan` / `PlanStep` models and the `Planner` interface (not wired in yet). |
-| `ai/prompts.py` | System prompts. |
-| `tools/` | `Tool` contract, `ToolRegistry`, example tools. |
-| `devices/` | Device types/statuses and `DeviceManager` (registered devices + live status). |
-| `agents/` | Server side of device agents: `AgentConnection` wraps a socket, `AgentManager` tracks who is connected. |
-| `memory/` | `MemoryService` for long-term memory. |
+| `ai/service.py` | `AIService` interface + `OpenAIService`. Nothing else touches a provider SDK. |
+| `ai/router.py` | The agent loop: model → tool calls → results → model. Holds back high-risk calls. |
+| `ai/assistant.py` | One turn end to end: conversation, system prompt, loop, persistence, confirmations. |
+| `ai/confirmations.py` | High-risk actions parked until the user confirms (in memory, on purpose). |
+| `ai/prompts.py` | The system prompt, including the live device list. |
+| `ai/planner.py` | `Plan`/`PlanStep` types for future explicit planning (not used yet). |
+| `agents/manager.py` | Which agents are connected right now (in memory). |
+| `agents/bus.py` | `CommandBus`: invoke a capability, wait for the matching `call_id`, time out honestly. |
+| `devices/capabilities.py` | The capability catalog: descriptions, argument schemas, risk. |
+| `devices/actions.py` | Turns online capabilities into model tools and dispatches them. |
+| `devices/manager.py` | Registered devices, live status, and the device summary for the prompt. |
+| `memory/conversations.py` | The rolling conversation, message history, audit log. |
+| `memory/service.py` | Long-term memory (facts, preferences). Not wired into chat yet. |
+| `api/` | Routes, WebSocket endpoint, dependency wiring. |
+| `core/` | Settings, logging, security primitives. |
 | `database/` | Async SQLAlchemy engine/session and ORM models. |
-| `schemas/` | Pydantic request/response models for the API. |
 
-`backend/app/agents/` is the server's view of device agents. The agents themselves
-will live in the top-level `agents/` folder (e.g. `agents/mac/`).
+## Capabilities and tool names
 
-## Request flow
+The catalog lives on the brain so there is one source of truth for schemas and risk. An
+agent announces the capability *names* it implements; the brain exposes them to the
+model as `<device type>_<capability>` (e.g. `mac_open_app`) and validates arguments
+before anything is sent to a device.
 
-Today:
+Consequences:
+
+- Only **online** devices contribute tools, so the model cannot call something that has
+  no chance of running.
+- An unknown capability announced by an agent is ignored, not trusted.
+- The device is implied by the tool name, so the user never says "target device = Mac".
+  If several devices of the same type are online, the tool returns an error telling the
+  model to ask which one.
+
+## Risk and confirmation
+
+| Risk | Examples | Behaviour |
+| --- | --- | --- |
+| low | `app_status`, `docker_status`, `open_app` | runs immediately |
+| medium | `close_app` | runs immediately |
+| high | `run_command` | **never** runs on the model's word alone |
+
+A high-risk call is parked as a pending action. The model is told to show the user
+exactly what it would do; the client renders a confirm/cancel card; only
+`POST /api/v1/actions/{id}/confirm` executes it. Pending actions are single-use, expire
+after 10 minutes, and are lost on restart by design.
+
+## Voice
 
 ```text
-POST /api/v1/chat → AIRouter.handle → AIService.complete → OpenAI → response
+browser mic ──WebRTC──► OpenAI Realtime ──tool call──► browser ──HTTP──► BRAIN ──► Mac agent
+     ▲                        │                                                      │
+     └──────── speech ────────┘◄──────────────── real result ◄─────────────────────--┘
 ```
 
-Target, once function calling lands:
+- `POST /api/v1/voice/session` mints a short-lived client secret and configures the
+  session with the current device list and the same tool specs the text loop uses. The
+  real API key never reaches the browser.
+- Audio flows browser ↔ OpenAI directly, which is what keeps latency low. The brain is
+  not in the audio path.
+- Tool calls are *not* executed by the browser: they are posted to
+  `POST /api/v1/voice/tool`, which runs them through `AIRouter.run_tool` — the same risk
+  gating, confirmation and audit as text. A high-risk call returns
+  `confirmation_required` plus a pending action, and the user confirms on screen.
+- Transcripts are stored via `POST /api/v1/voice/turn`, so spoken and typed turns live in
+  one conversation.
+- Cost: audio is billed per minute, so the browser closes an idle session after two
+  minutes, and the cheap realtime model is the default.
 
-```text
-User → Chat API → AIRouter → Planner → tool selection → ToolRegistry.execute → response
-```
+A session's tool list is a snapshot from when it was created; a device that connects
+mid-session is not offered until the next session.
 
-The seams already exist: the route only knows `AIRouter`, `AIRouter` only knows the
-`AIService` interface, and tools only run through `ToolRegistry.execute`, which
-validates arguments and enforces confirmation.
+## Conversation model
 
-## Changing the model or provider
+One rolling conversation: any client joins the same thread, so a talk started on one
+device continues on another. After 60 minutes of silence the next message starts a new
+conversation. History is stored as real message roles (`user`, `assistant`, `tool`,
+`system`), which is exactly what the model is fed again on the next turn.
 
-- **Model:** set `OPENAI_MODEL`. No code change.
-- **Provider:** implement `AIService.complete` in a new class and return it from
-  `get_ai_service()` in `app/api/deps.py`. Routes and `AIRouter` stay the same.
+## Audit
 
-## Tools
+Every executed tool call is written to `tool_calls`: what ran, with which arguments,
+whether it worked, the error, and how long it took. This is the answer to "what did it
+actually do?" and it is what the dashboard's activity list shows.
 
-A tool subclasses `Tool` and declares:
+## Security (current state)
 
-- `name`, `description` — what the model sees
-- `parameters` — a Pydantic model, exported as JSON Schema for function calling and
-  used to validate arguments (unknown arguments are rejected)
-- `permission` — the `Permission` level it needs
-- `requires_confirmation` — set on dangerous tools; the registry refuses to run them
-  unless `confirmed=True`
-- `async execute(params)` — returns a JSON-serializable result
+- Provider API keys live only in backend environment variables; the browser never sees them.
+- Docker Compose publishes ports on `127.0.0.1` only; the Mac agent connects outbound.
+- `AGENT_TOKEN`, when set, is required from device agents.
+- `get_current_user` (`core/security.py`) is the authentication hook. It currently returns
+  the local owner: **single-user, local-machine mode**.
+- `run_command` is a shell on the Mac. It is gated by confirmation, but treat the whole
+  system as trusted-local until real authentication exists.
 
-Register new tools in `create_default_registry()` (`app/tools/registry.py`).
+**Before the brain leaves this machine:** real authentication in `get_current_user`,
+per-device credentials instead of one shared token, and a stricter policy for
+`run_command` (allowlist or disabled remotely).
 
-## Devices
+## Known limits
 
-- Devices are stored in the `devices` table (`id`, `name`, `type`, `last_seen`).
-- **Status is derived, not stored:** a device is `online` exactly while its agent
-  holds a WebSocket open (`AgentManager`), so it can't go stale after a crash.
-- Agents register with `{"type": "register", "device": {...}}` as their first
-  message (see `agents/mac/README.md`).
-- `AgentManager` keeps connections in memory, which works for one backend process.
-  Several workers would need a shared channel such as Redis pub/sub.
-
-## Memory
-
-`MemoryService` stores `Memory` rows tagged with a `MemoryKind` (conversation,
-preference, project, device, task, context). `search()` is plain text matching for
-now; with pgvector it becomes similarity search over an `embedding` column without
-changing callers.
-
-## Database
-
-Tables: `devices`, `conversations`, `messages`, `memories`, managed by Alembic
-(`backend/alembic/`). The app uses async SQLAlchemy and Alembic a sync engine; both
-read the same `DATABASE_URL` through psycopg 3, which supports both modes.
-
-## Security
-
-- API keys live only in backend environment variables; the web app never sees them.
-- Docker Compose publishes ports on `127.0.0.1` only.
-- `get_current_user` (`app/core/security.py`) is the authentication hook; every
-  `/api/v1` route depends on it. Today it returns the local owner (single-user local
-  mode). Real authentication (tokens signed with `SECRET_KEY`) goes there.
-- Permission levels: `READ`, `WRITE`, `EXECUTE`, `MESSAGE`, `SYSTEM`, `ADMIN`. Tools
-  declare one; enforcing them per user is future work.
-- Dangerous tools require explicit confirmation, enforced in `ToolRegistry`.
-- `APP_ENV=production` refuses to start without `SECRET_KEY`.
-
-**Before exposing the backend beyond localhost:** implement real authentication in
-`get_current_user`, authenticate device agents on `/ws/devices`, and restrict CORS.
+- Agent connections and pending actions live in memory → one backend process only.
+- Long-term memory (`memory/service.py`) is not used by the chat flow yet.
+- No voice yet; text only.
+- Tests use SQLite; when pgvector arrives they move to PostgreSQL.

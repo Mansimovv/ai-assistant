@@ -1,34 +1,41 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
-import { ActivityFeed, type ActivityEntry } from "@/components/activity-feed";
-import { ChatForm } from "@/components/chat-form";
+import { Activity } from "@/components/activity";
+import { Chat } from "@/components/chat";
 import { DeviceList } from "@/components/device-list";
+import { getInfo } from "@/lib/api";
 
 export default function Home() {
-  const [activity, setActivity] = useState<ActivityEntry[]>([]);
+  // The name comes from the backend, so renaming the assistant is one setting.
+  const [name, setName] = useState("Assistant");
+  const [activityKey, setActivityKey] = useState(0);
 
-  function addActivity(kind: ActivityEntry["kind"], text: string) {
-    setActivity((entries) => [{ id: crypto.randomUUID(), kind, text, time: new Date() }, ...entries]);
-  }
+  useEffect(() => {
+    getInfo()
+      .then((info) => setName(info.name))
+      .catch(() => undefined);
+  }, []);
 
   return (
-    <main className="mx-auto max-w-2xl space-y-10 p-6">
-      <section className="space-y-4">
-        <h1 className="border-b border-gray-200 pb-2 text-2xl font-semibold">Personal AI</h1>
-        <ChatForm onActivity={addActivity} />
-      </section>
+    <main className="mx-auto max-w-5xl p-6">
+      <h1 className="mb-6 border-b border-gray-200 pb-3 text-2xl font-semibold">{name}</h1>
 
-      <section className="space-y-3">
-        <h2 className="border-b border-gray-200 pb-2 text-lg font-semibold">Devices</h2>
-        <DeviceList />
-      </section>
+      <div className="grid gap-6 lg:grid-cols-[1fr_280px]">
+        <Chat onActed={() => setActivityKey((key) => key + 1)} />
 
-      <section className="space-y-3">
-        <h2 className="border-b border-gray-200 pb-2 text-lg font-semibold">Recent activity</h2>
-        <ActivityFeed entries={activity} />
-      </section>
+        <aside className="space-y-8">
+          <section>
+            <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-gray-500">Cihazlar</h2>
+            <DeviceList />
+          </section>
+          <section>
+            <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-gray-500">Son fəaliyyət</h2>
+            <Activity reloadKey={activityKey} />
+          </section>
+        </aside>
+      </div>
     </main>
   );
 }

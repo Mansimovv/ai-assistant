@@ -1,16 +1,19 @@
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
 from app.core.security import Permission
+from app.devices.capabilities import Risk
 
 
 class ToolInfo(BaseModel):
     name: str
     description: str
     parameters: dict[str, Any]  # JSON Schema
-    permission: Permission
-    requires_confirmation: bool
+    risk: Risk
+    target: Literal["backend", "device"]
+    permission: Permission | None = None
+    requires_confirmation: bool = False
 
 
 class ToolExecuteRequest(BaseModel):

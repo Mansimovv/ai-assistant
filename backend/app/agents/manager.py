@@ -24,6 +24,12 @@ class AgentManager:
     def is_connected(self, device_id: str) -> bool:
         return device_id in self._connections
 
+    def get(self, device_id: str) -> AgentConnection | None:
+        return self._connections.get(device_id)
+
+    def connections(self) -> list[AgentConnection]:
+        return list(self._connections.values())
+
     async def send(self, device_id: str, message: dict[str, Any]) -> None:
         connection = self._connections.get(device_id)
         if connection is None:

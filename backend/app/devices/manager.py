@@ -40,12 +40,24 @@ class DeviceManager:
         )
         await self._session.commit()
 
+    async def summary(self) -> str:
+        """Device list for the system prompt, so the model knows what exists right now."""
+        lines = []
+        for device in await self.list_devices():
+            if device.status is DeviceStatus.ONLINE:
+                can = ", ".join(device.capabilities) or "nothing yet"
+                lines.append(f"- {device.name} (type={device.type}, id={device.id}) - online; can: {can}")
+            else:
+                lines.append(f"- {device.name} (type={device.type}, id={device.id}) - offline")
+        return "\n".join(lines)
+
     def _to_schema(self, device: Device) -> DeviceRead:
-        connected = self._agents.is_connected(device.id)
+        connection = self._agents.get(device.id)
         return DeviceRead(
             id=device.id,
             name=device.name,
             type=device.type,
-            status=DeviceStatus.ONLINE if connected else DeviceStatus.OFFLINE,
+            status=DeviceStatus.ONLINE if connection else DeviceStatus.OFFLINE,
             last_seen=device.last_seen,
+            capabilities=connection.capabilities if connection else [],
         )

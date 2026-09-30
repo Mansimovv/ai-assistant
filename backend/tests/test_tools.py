@@ -4,6 +4,8 @@ import pytest
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
+from app.api.deps import get_device_actions
+from app.main import app
 from app.tools.base import Tool, ToolParameters
 from app.tools.registry import ConfirmationRequiredError, ToolNotFoundError, ToolRegistry, create_default_registry
 
@@ -20,9 +22,7 @@ class DangerousTool(Tool[ToolParameters]):
 
 @pytest.mark.anyio
 async def test_registry_executes_tool() -> None:
-    registry = create_default_registry()
-
-    assert await registry.execute("echo", {"text": "hi"}) == {"text": "hi"}
+    assert await create_default_registry().execute("echo", {"text": "hi"}) == {"text": "hi"}
 
 
 @pytest.mark.anyio
@@ -67,22 +67,31 @@ async def test_dangerous_tool_requires_confirmation() -> None:
 
 
 def test_list_tools_endpoint(client: TestClient) -> None:
-    response = client.get("/api/v1/tools")
+    tools = {tool["name"]: tool for tool in client.get("/api/v1/tools").json()}
 
-    assert response.status_code == 200
-    tools = {tool["name"]: tool for tool in response.json()}
     assert set(tools) == {"get_current_time", "echo"}
+    assert tools["echo"]["target"] == "backend"
     assert "text" in tools["echo"]["parameters"]["properties"]
-    assert tools["echo"]["permission"] == "read"
 
 
 def test_execute_tool_endpoint(client: TestClient) -> None:
     response = client.post("/api/v1/tools/echo/execute", json={"arguments": {"text": "hi"}})
 
     assert response.status_code == 200
-    assert response.json() == {"tool": "echo", "result": {"text": "hi"}}
+    assert response.json() == {"tool": "echo", "result": {"ok": True, "data": {"text": "hi"}}}
 
 
 def test_execute_tool_endpoint_errors(client: TestClient) -> None:
     assert client.post("/api/v1/tools/missing/execute", json={}).status_code == 404
     assert client.post("/api/v1/tools/echo/execute", json={"arguments": {}}).status_code == 422
+
+
+def test_execute_device_tool_endpoint(client: TestClient, connected_mac) -> None:
+    devices, socket = connected_mac
+    app.dependency_overrides[get_device_actions] = lambda: devices
+
+    response = client.post("/api/v1/tools/mac_open_app/execute", json={"arguments": {"name": "TextEdit"}})
+
+    assert response.status_code == 200
+    assert response.json()["result"] == {"ok": True, "data": {"running": True}, "verified": True}
+    assert socket.invocations[0]["capability"] == "open_app"
