@@ -14,6 +14,30 @@ you one page to open. No iPhone app yet.
 
 ## What it can do today
 
+- **Jarvis-style interface.** A full-screen living orb in the middle — red while you speak,
+  green while it speaks — with the conversation history on the left and devices/activity
+  on the right.
+- **"Hey Jarvis" or two claps.** While the page is open it listens for its name (Chrome's
+  speech recognition) and for a double clap (an audio-thread detector that ignores speech
+  and single bangs). "Hey Jarvis, VS Code-u aç" works in one breath; what it heard is shown
+  under the orb. "Sağ ol" / "yat" sends it back to sleep. On by default; the switch at the
+  top turns it off.
+- **Native Azerbaijani voice.** With `AZURE_SPEECH_KEY` set, the realtime model answers in
+  text and every sentence is spoken by Azure's native `az-AZ-BabekNeural` (or Banu) voice
+  as it streams; talking over it stops it at once. Without the key the realtime model
+  speaks itself, with a foreign accent.
+- **Use the Mac like a person.** Reads the screen (macOS OCR, text with click points),
+  moves and clicks the mouse, scrolls, types any text (ə, ş, ç included) and presses
+  shortcuts, looping look → act → look until the task is done. Needs Accessibility and
+  Screen Recording permission for the agent's Python (the install script prints the path).
+- **Code with Claude.** "xakker frontend-i VS Code-da aç, Claude ilə login bug-ını həll et"
+  finds the project in `~/Projects` (asks if several match), opens it in VS Code and starts
+  Claude Code with the task in a visible Terminal, with Claude's normal permission prompts.
+- **Remember you, in Obsidian.** Facts go to `Jarvis/Memory.md` in your vault and are read
+  into every conversation (text and voice); every turn is logged to
+  `Jarvis/Conversations/YYYY-MM-DD.md`; it can search your whole vault. Edit the memory
+  file yourself and it knows.
+
 - **Talk normally, by text or by voice.** "Docker işləyir?" → it checks the real Docker on
   your Mac and answers. The microphone button opens a live, interruptible voice session.
 - **Act on the Mac.** Open/quit apps (verified afterwards, and matched from whatever you
@@ -24,8 +48,12 @@ you one page to open. No iPhone app yet.
   voice transcripts; it asks you to repeat rather than guessing.
 - **Refuse to lie.** It may only claim what a tool result says. A failure, a timeout or an
   offline device is reported as such.
-- **Ask before dangerous things.** Shell commands are shown to you with a confirm button
-  and never run on the model's word alone.
+- **Full access when you want it.** With `FULL_AUTONOMY=true`, shell, Terminal and
+  AppleScript run straight away. Anything that looks destructive (`rm`, `sudo`, force
+  push, shutdown, ...) still waits for your confirm button. With it off, every high-risk
+  action waits.
+- **Control the whole Mac.** AppleScript (any app, settings, notifications), volume, and
+  system info (battery, Wi-Fi, disk, frontmost app).
 - **Keep one conversation.** Any client joins the same thread, so context carries over.
 - **Log everything.** Every executed action with arguments, result, error and duration.
 
@@ -121,22 +149,31 @@ nothing can act — the agent just keeps retrying harmlessly.
 | `DATABASE_URL` | e.g. `postgresql+psycopg://postgres:postgres@localhost:5432/personal_ai` |
 | `SECRET_KEY` | For future token signing |
 | `AGENT_TOKEN` | When set, device agents must present it |
-| `REALTIME_MODEL` | Voice model, default `gpt-realtime-2.1-mini` (the cheap one) |
+| `REALTIME_MODEL` | Voice model, default `gpt-realtime-2.1`; `gpt-realtime-2.1-mini` is ~3x cheaper but hears and speaks Azerbaijani worse |
 | `REALTIME_VOICE` | Voice, default `marin` |
 | `VOICE_LANGUAGE` | Spoken language hint, default `az` |
 | `OWNER_NAME` | Who the assistant is talking to |
 | `CORS_ORIGINS` | JSON list of allowed browser origins |
+| `OBSIDIAN_VAULT_PATH` | Obsidian vault for memory (outside Docker; compose mounts `OBSIDIAN_VAULT` from the repository `.env`) |
+| `AZURE_SPEECH_KEY` | Azure Speech key for the native Azerbaijani voice (free tier: 500k characters/month) |
+| `AZURE_SPEECH_REGION` | Region of that Speech resource, default `westeurope` |
+| `AZURE_TTS_VOICE` | `az-AZ-BabekNeural` (male, default) or `az-AZ-BanuNeural` (female) |
+| `FULL_AUTONOMY` | `true` runs high-risk actions without asking, except destructive-looking commands |
 
 `web/.env.local` (optional): `NEXT_PUBLIC_API_URL`, the backend URL. It is public by
 design — never put secrets in `NEXT_PUBLIC_*`.
 
 The repository `.env` holds the Docker host ports (`POSTGRES_PORT`, `BACKEND_PORT`,
-`WEB_PORT`) and may hold `OPENAI_API_KEY`, which overrides `backend/.env` for containers.
+`WEB_PORT`), `OBSIDIAN_VAULT` (host path of the vault, mounted into the backend), `TZ`
+(default `Asia/Baku`, for log times) and may hold `OPENAI_API_KEY`, which overrides
+`backend/.env` for containers.
 
 ### Voice costs money per minute
 
-Audio is billed per minute, unlike text. The defaults are chosen for that: the cheap
-realtime model, and a session that closes itself after two minutes of silence. Set a
+Audio is billed per minute, unlike text. The default is the full realtime model because
+the mini one misheard and mispronounced Azerbaijani; switch `REALTIME_MODEL` to
+`gpt-realtime-2.1-mini` to pay ~3x less. A session closes itself after five minutes of
+silence. Set a
 monthly spend limit in the OpenAI dashboard, and do not leave the microphone on.
 
 ## Endpoints
@@ -148,8 +185,11 @@ monthly spend limit in the OpenAI dashboard, and do not leave the microphone on.
 | POST | `/api/v1/chat` | Send a message; returns the reply, executed actions and pending confirmations |
 | POST | `/api/v1/voice/session` | Short-lived credential for a browser voice session |
 | POST | `/api/v1/voice/tool` | A tool the voice model asked for (same gating as text) |
+| POST | `/api/v1/voice/speak` | One sentence as native Azerbaijani speech (MP3) |
 | POST | `/api/v1/voice/turn` | Store a spoken turn in the shared conversation |
+| GET | `/api/v1/conversations` | Past conversations (history sidebar) |
 | GET | `/api/v1/conversations/current` | The shared thread |
+| GET | `/api/v1/conversations/{id}` | One past conversation |
 | POST | `/api/v1/actions/{id}/confirm` | Run a held-back high-risk action |
 | POST | `/api/v1/actions/{id}/cancel` | Drop it |
 | GET | `/api/v1/devices` | Devices, live status, capabilities |
@@ -183,8 +223,10 @@ See the security section of [docs/architecture.md](docs/architecture.md).
 [x] Voice: realtime, interruptible, same tools and conversation as text
 [x] One-command Docker start + a single page to open
 
-[ ] Long-term memory used in chat (preferences, projects)
-[ ] Native Mac app (menu bar, global hotkey, "hey <name>" wake word)
+[x] Long-term memory in Obsidian, used by text and voice
+[x] Jarvis UI: orb, history sidebar
+[x] "Hey Jarvis" wake word (in the browser)
+[ ] Native Mac app (menu bar, global hotkey, offline wake word)
 [ ] Multi-step task UI (progress, cancel)
 [ ] Real authentication + per-device pairing
 [ ] Brain on a server, reachable from anywhere

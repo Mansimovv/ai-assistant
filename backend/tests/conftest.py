@@ -1,6 +1,13 @@
+import os
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 from typing import Any
+
+# Tests must not write to the owner's real vault or inherit their autonomy setting
+# from backend/.env. Environment variables win over the .env file.
+os.environ["OBSIDIAN_VAULT_PATH"] = "/nonexistent-test-vault"
+os.environ["FULL_AUTONOMY"] = "false"
+os.environ["ASSISTANT_STYLE"] = "default"
 
 import pytest
 from fastapi.testclient import TestClient

@@ -90,3 +90,59 @@ async def test_loop_stops_at_the_step_budget(connected_mac) -> None:
     assert len(turn.actions) == 3
     assert turn.text == "Dayandım."
     assert ai.tools_offered[-1] == []  # the final call offers no tools, forcing an answer
+
+
+@pytest.mark.anyio
+async def test_full_autonomy_runs_high_risk_tools_without_asking(connected_mac) -> None:
+    devices, socket = connected_mac
+    router = AIRouter(ScriptedAI(), create_default_registry(), devices, full_autonomy=True)
+
+    payload, record = await router.run_tool("mac_run_in_terminal", {"command": "ssh root@10.0.0.5"}, requested := [])
+
+    assert socket.invocations[0]["capability"] == "run_in_terminal"
+    assert requested == []
+    assert record.ok
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("command", ["rm -rf ~/Projects", "sudo shutdown -h now", "git push -f origin main"])
+async def test_full_autonomy_still_holds_back_destructive_commands(connected_mac, command: str) -> None:
+    devices, socket = connected_mac
+    router = AIRouter(ScriptedAI(), create_default_registry(), devices, full_autonomy=True)
+
+    payload, _ = await router.run_tool("mac_run_command", {"command": command}, requested := [])
+
+    assert socket.invocations == []
+    assert payload["error"] == "confirmation_required"
+    assert [r.tool for r in requested] == ["mac_run_command"]
+
+
+@pytest.mark.anyio
+async def test_screenshot_is_shown_to_the_model_but_not_stored() -> None:
+    """The model must see the screen; the database must not fill up with images."""
+    from app.agents.base import AgentConnection
+    from app.agents.bus import CommandBus, CommandResult
+    from app.agents.manager import AgentManager
+    from app.ai.service import _to_openai_message
+    from app.devices.actions import DeviceActions
+    from tests.conftest import FakeSocket
+
+    agents = AgentManager()
+    bus = CommandBus(agents)
+    image = "data:image/jpeg;base64,AAAA"
+    socket = FakeSocket(bus, CommandResult(ok=True, data={"texts": [], "screenshot": image}, verified=True))
+    agents.connect(AgentConnection("mac", "MacBook", "mac", ["look_at_screen"], socket, []))  # type: ignore[arg-type]
+    ai = ScriptedAI(
+        Completion(tool_calls=[ToolCall(id="c1", name="mac_look_at_screen", arguments={})]),
+        Completion(tool_calls=[ToolCall(id="c2", name="mac_look_at_screen", arguments={})]),
+        Completion(text="Ekranda Safari açıqdır."),
+    )
+    router = AIRouter(ai, create_default_registry(), DeviceActions(agents, bus))
+
+    turn = await router.handle(_messages("ekrana bax"))
+
+    seen = ai.calls[-1]
+    assert [m.images for m in seen if m.images] == [[image]]  # only the latest screenshot
+    assert _to_openai_message(seen[-1])["content"][1]["image_url"]["url"] == image
+    assert all(not m.images and image not in (m.content or "") for m in turn.messages)
+    assert turn.text == "Ekranda Safari açıqdır."

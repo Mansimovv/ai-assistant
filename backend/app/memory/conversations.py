@@ -8,7 +8,7 @@ next message starts a new conversation.
 import uuid
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai.router import ActionRecord
@@ -45,7 +45,12 @@ class ConversationService:
         rows = await self._session.scalars(
             select(Message).where(Message.conversation_id == conversation_id).order_by(Message.id)
         )
-        return [_to_chat_message(row) for row in list(rows)[-HISTORY_LIMIT:]]
+        recent = list(rows)[-HISTORY_LIMIT:]
+        # The cut may land between a tool call and its results; a history that starts
+        # with orphaned tool results is rejected by the provider, so start at a user turn.
+        while recent and recent[0].role != "user":
+            recent.pop(0)
+        return [_to_chat_message(row) for row in recent]
 
     async def rows(self, conversation_id: uuid.UUID) -> list[Message]:
         """Stored messages, for showing the thread in a client."""
@@ -53,6 +58,29 @@ class ConversationService:
             select(Message).where(Message.conversation_id == conversation_id).order_by(Message.id)
         )
         return list(rows)
+
+    async def get(self, conversation_id: uuid.UUID) -> Conversation | None:
+        return await self._session.get(Conversation, conversation_id)
+
+    async def recent(self, limit: int = 50) -> list[tuple[Conversation, str]]:
+        """Past conversations, newest first, each with its first user message as a preview."""
+        conversations = list(
+            await self._session.scalars(
+                select(Conversation).order_by(Conversation.updated_at.desc()).limit(limit)
+            )
+        )
+        if not conversations:
+            return []
+        first_ids = (
+            select(func.min(Message.id))
+            .where(Message.conversation_id.in_([c.id for c in conversations]), Message.role == "user")
+            .group_by(Message.conversation_id)
+        )
+        previews = {
+            row.conversation_id: row.content or ""
+            for row in await self._session.scalars(select(Message).where(Message.id.in_(first_ids)))
+        }
+        return [(c, c.title or previews.get(c.id, "")) for c in conversations if c.id in previews]
 
     async def append(
         self,

@@ -10,7 +10,9 @@ from app.agents.bus import command_bus
 from app.agents.manager import agent_manager
 from app.ai.assistant import Assistant
 from app.ai.confirmations import PendingActions, pending_actions
+from app.ai.live import LiveService
 from app.ai.router import AIRouter
+from app.ai.speech import SpeechService
 from app.ai.service import AIService, OpenAIService
 from app.ai.voice import VoiceService
 from app.core.config import Settings, get_settings
@@ -18,6 +20,7 @@ from app.database.session import get_session
 from app.devices.actions import DeviceActions
 from app.devices.manager import DeviceManager
 from app.memory.conversations import ConversationService
+from app.memory.obsidian import ObsidianVault
 from app.tools.registry import ToolRegistry, create_default_registry
 
 SettingsDep = Annotated[Settings, Depends(get_settings)]
@@ -45,8 +48,27 @@ def get_voice_service() -> VoiceService:
 
 
 @lru_cache
+def get_live_service() -> LiveService:
+    settings = get_settings()
+    api_key = settings.openai_api_key.get_secret_value() if settings.openai_api_key else None
+    return LiveService(api_key=api_key, model=settings.live_model, voice=settings.live_voice)
+
+
+@lru_cache
+def get_speech_service() -> SpeechService:
+    settings = get_settings()
+    key = settings.azure_speech_key.get_secret_value() if settings.azure_speech_key else None
+    return SpeechService(key, settings.azure_speech_region, settings.azure_tts_voice)
+
+
+@lru_cache
+def get_vault() -> ObsidianVault:
+    return ObsidianVault(get_settings().obsidian_vault_path)
+
+
+@lru_cache
 def get_tool_registry() -> ToolRegistry:
-    return create_default_registry()
+    return create_default_registry(get_vault())
 
 
 def get_device_actions() -> DeviceActions:
@@ -65,8 +87,9 @@ def get_ai_router(
     ai: Annotated[AIService, Depends(get_ai_service)],
     tools: Annotated[ToolRegistry, Depends(get_tool_registry)],
     devices: Annotated[DeviceActions, Depends(get_device_actions)],
+    settings: SettingsDep,
 ) -> AIRouter:
-    return AIRouter(ai, tools, devices)
+    return AIRouter(ai, tools, devices, full_autonomy=settings.full_autonomy)
 
 
 def get_pending_actions() -> PendingActions:
@@ -79,10 +102,19 @@ def get_assistant(
     devices: Annotated[DeviceManager, Depends(get_device_manager)],
     actions: Annotated[DeviceActions, Depends(get_device_actions)],
     pending: Annotated[PendingActions, Depends(get_pending_actions)],
+    vault: Annotated[ObsidianVault, Depends(get_vault)],
     settings: SettingsDep,
 ) -> Assistant:
     return Assistant(
-        router, conversations, devices, actions, pending, settings.app_name, settings.owner_name
+        router,
+        conversations,
+        devices,
+        actions,
+        pending,
+        settings.app_name,
+        settings.owner_name,
+        vault,
+        settings.assistant_style,
     )
 
 
@@ -92,3 +124,5 @@ DeviceManagerDep = Annotated[DeviceManager, Depends(get_device_manager)]
 DeviceActionsDep = Annotated[DeviceActions, Depends(get_device_actions)]
 RegistryDep = Annotated[ToolRegistry, Depends(get_tool_registry)]
 VoiceServiceDep = Annotated[VoiceService, Depends(get_voice_service)]
+SpeechServiceDep = Annotated[SpeechService, Depends(get_speech_service)]
+LiveServiceDep = Annotated[LiveService, Depends(get_live_service)]

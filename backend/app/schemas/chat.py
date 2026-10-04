@@ -37,6 +37,12 @@ class ConversationRead(BaseModel):
     messages: list[MessageRead] = Field(default_factory=list)
 
 
+class ConversationSummary(BaseModel):
+    id: uuid.UUID
+    preview: str
+    updated_at: datetime
+
+
 class ActionLogRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

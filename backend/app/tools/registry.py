@@ -1,7 +1,9 @@
 from typing import Any
 
+from app.memory.obsidian import ObsidianVault
 from app.tools.base import Tool
 from app.tools.examples import Echo, GetCurrentTime
+from app.tools.memory import Remember, SearchNotes
 
 
 class ToolNotFoundError(LookupError):
@@ -43,8 +45,11 @@ class ToolRegistry:
         return await tool.execute(params)
 
 
-def create_default_registry() -> ToolRegistry:
+def create_default_registry(vault: ObsidianVault | None = None) -> ToolRegistry:
     registry = ToolRegistry()
     registry.register(GetCurrentTime())
     registry.register(Echo())
+    if vault is not None and vault.enabled:
+        registry.register(Remember(vault))
+        registry.register(SearchNotes(vault))
     return registry

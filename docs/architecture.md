@@ -58,7 +58,8 @@ a tool result says. A timeout or a missing device is a failure, not a success.
 | `devices/actions.py` | Turns online capabilities into model tools and dispatches them. |
 | `devices/manager.py` | Registered devices, live status, and the device summary for the prompt. |
 | `memory/conversations.py` | The rolling conversation, message history, audit log. |
-| `memory/service.py` | Long-term memory (facts, preferences). Not wired into chat yet. |
+| `memory/obsidian.py` | Long-term memory in the Obsidian vault: `Memory.md` into every prompt, daily conversation logs, vault search. |
+| `memory/service.py` | Database-backed memory (facts, preferences). Not wired into chat; Obsidian is used instead. |
 | `api/` | Routes, WebSocket endpoint, dependency wiring. |
 | `core/` | Settings, logging, security primitives. |
 | `database/` | Async SQLAlchemy engine/session and ORM models. |
@@ -85,7 +86,12 @@ Consequences:
 | --- | --- | --- |
 | low | `app_status`, `docker_status`, `open_app`, `list_apps`, `find_files` | runs immediately |
 | medium | `close_app` | runs immediately |
-| high | `run_command`, `run_in_terminal` | **never** runs on the model's word alone |
+| high | `run_command`, `run_in_terminal`, `run_applescript` | waits for confirmation, unless `FULL_AUTONOMY=true` |
+
+With `FULL_AUTONOMY=true`, high-risk calls run immediately **except** when an argument
+matches the destructive pattern in `ai/router.py` (`rm`, `sudo`, force push, shutdown,
+`docker system prune`, ...). Those always wait, so a misheard voice command cannot wipe
+anything.
 
 A high-risk call is parked as a pending action. The model is told to show the user
 exactly what it would do; the client renders a confirm/cancel card; only
@@ -111,6 +117,9 @@ browser mic ──WebRTC──► OpenAI Realtime ──tool call──► brows
   `confirmation_required` plus a pending action, and the user confirms on screen.
 - Transcripts are stored via `POST /api/v1/voice/turn`, so spoken and typed turns live in
   one conversation.
+- A realtime session starts empty, so its instructions include the Obsidian memory and the
+  last 20 turns of the current conversation; voice continues where text left off.
+- Input uses far-field noise reduction and server VAD tuned to wait for a 700 ms pause.
 - Cost: audio is billed per minute, so the browser closes an idle session after two
   minutes, and the cheap realtime model is the default.
 
@@ -162,6 +171,4 @@ per-device credentials instead of one shared token, and a stricter policy for
 ## Known limits
 
 - Agent connections and pending actions live in memory → one backend process only.
-- Long-term memory (`memory/service.py`) is not used by the chat flow yet.
-- No voice yet; text only.
 - Tests use SQLite; when pgvector arrives they move to PostgreSQL.

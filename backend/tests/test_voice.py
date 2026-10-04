@@ -2,7 +2,8 @@
 
 from fastapi.testclient import TestClient
 
-from app.api.deps import get_device_actions, get_voice_service
+from app.ai.speech import SpeechService
+from app.api.deps import get_device_actions, get_speech_service, get_voice_service
 from app.ai.voice import VoiceService, VoiceSession
 from app.main import app
 
@@ -50,7 +51,7 @@ def test_voice_session_is_given_app_names_for_transcription(client: TestClient) 
     captured: dict[str, object] = {}
 
     class RecordingVoiceService(VoiceService):
-        async def create_session(self, instructions, tools, vocabulary=None):  # type: ignore[override]
+        async def create_session(self, instructions, tools, vocabulary=None, native_speech=False):  # type: ignore[override]
             captured["vocabulary"] = vocabulary
             captured["tools"] = [tool.name for tool in tools]
             captured["instructions"] = instructions
@@ -88,3 +89,70 @@ def test_spoken_turns_join_the_same_conversation(client: TestClient) -> None:
         ("user", "Docker işləyir?"),
         ("assistant", "Bəli."),
     ]
+
+
+def test_new_voice_session_is_told_the_conversation_so_far(client: TestClient) -> None:
+    """A realtime session starts empty; without this, voice forgets what was just said."""
+    captured: dict[str, str] = {}
+
+    class RecordingVoiceService(VoiceService):
+        async def create_session(self, instructions, tools, vocabulary=None, native_speech=False):  # type: ignore[override]
+            captured["instructions"] = instructions
+            return VoiceSession(client_secret="ek_test", model="test-model")
+
+    app.dependency_overrides[get_voice_service] = lambda: RecordingVoiceService(
+        api_key="k", model="m", voice="marin", transcribe_model="t", language="az"
+    )
+    client.post("/api/v1/voice/turn", json={"role": "user", "text": "Serverim 10.0.0.5-dir"})
+
+    client.post("/api/v1/voice/session")
+
+    assert "User: Serverim 10.0.0.5-dir" in captured["instructions"]
+
+
+def test_speak_without_azure_key_returns_503(client: TestClient) -> None:
+    app.dependency_overrides[get_speech_service] = lambda: SpeechService(None, "westeurope", "az-AZ-BabekNeural")
+
+    response = client.post("/api/v1/voice/speak", json={"text": "Salam"})
+
+    assert response.status_code == 503
+    assert "AZURE_SPEECH_KEY" in response.json()["detail"]
+
+
+def test_native_voice_makes_the_session_answer_in_text(client: TestClient) -> None:
+    """With a native Azerbaijani voice, the model writes and the browser speaks."""
+    captured: dict[str, bool] = {}
+
+    class RecordingVoiceService(VoiceService):
+        async def create_session(self, instructions, tools, vocabulary=None, native_speech=False):  # type: ignore[override]
+            captured["native_speech"] = native_speech
+            return VoiceSession(client_secret="ek_test", model="m", speech="native" if native_speech else "realtime")
+
+    app.dependency_overrides[get_voice_service] = lambda: RecordingVoiceService(
+        api_key="k", model="m", voice="marin", transcribe_model="t", language="az"
+    )
+    app.dependency_overrides[get_speech_service] = lambda: SpeechService("key", "westeurope", "az-AZ-BabekNeural")
+
+    body = client.post("/api/v1/voice/session").json()
+
+    assert captured["native_speech"] is True
+    assert body["speech"] == "native"
+
+
+def test_voice_tool_results_never_carry_a_screenshot(client: TestClient) -> None:
+    """A base64 screenshot sent to the voice model as text would cost a fortune."""
+    from app.agents.base import AgentConnection
+    from app.agents.bus import CommandBus, CommandResult
+    from app.agents.manager import AgentManager
+    from app.devices.actions import DeviceActions
+    from tests.conftest import FakeSocket
+
+    agents = AgentManager()
+    bus = CommandBus(agents)
+    socket = FakeSocket(bus, CommandResult(ok=True, data={"texts": [], "screenshot": "data:image/jpeg;base64,AAAA"}))
+    agents.connect(AgentConnection("mac", "MacBook", "mac", ["look_at_screen"], socket, []))  # type: ignore[arg-type]
+    app.dependency_overrides[get_device_actions] = lambda: DeviceActions(agents, bus)
+
+    body = client.post("/api/v1/voice/tool", json={"name": "mac_look_at_screen", "arguments": {}}).json()
+
+    assert "base64" not in str(body)

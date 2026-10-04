@@ -16,17 +16,40 @@ class Settings(BaseSettings):
     app_name: str = "Assistant"
     # Who the assistant is talking to, used in the system prompt.
     owner_name: str = "the owner"
+    # "default" (warm, polite) or "friend" (close-friend talk: slang and swearing).
+    assistant_style: str = "default"
 
     openai_api_key: SecretStr | None = None
     openai_model: str = "gpt-5.4-mini"
 
-    # Voice (OpenAI Realtime). The mini model is ~3x cheaper per audio minute.
-    realtime_model: str = "gpt-realtime-2.1-mini"
+    # Voice engine: "live" (GPT-Live: full-duplex voice that delegates real work to the
+    # brain) or "realtime" (one realtime model listens, thinks and acts itself).
+    voice_engine: str = "live"
+    live_model: str = "gpt-live-1"
+    live_voice: str = "cedar"
+
+    # Voice (OpenAI Realtime). The full model hears and speaks Azerbaijani far better;
+    # gpt-realtime-2.1-mini is ~3x cheaper per audio minute.
+    realtime_model: str = "gpt-realtime-2.1"
     realtime_voice: str = "marin"
     # The larger transcription model is noticeably better at Azerbaijani and at names.
-    realtime_transcribe_model: str = "gpt-4o-transcribe"
+    realtime_transcribe_model: str = "gpt-live-transcribe"
     # Spoken language hint for transcription, e.g. "az", "en", "tr".
     voice_language: str = "az"
+
+    # Native Azerbaijani speech (Azure Speech). When the key is set, voice answers are
+    # spoken by this voice instead of the realtime model's own, which has a foreign accent.
+    azure_speech_key: SecretStr | None = None
+    azure_speech_region: str = "westeurope"
+    # az-AZ-BabekNeural (male) or az-AZ-BanuNeural (female).
+    azure_tts_voice: str = "az-AZ-BabekNeural"
+
+    # Obsidian vault for long-term memory and conversation logs. Empty disables it.
+    obsidian_vault_path: str | None = None
+
+    # When true, high-risk actions (shell, Terminal, AppleScript) run without asking,
+    # except commands that look destructive (rm -r, sudo, ...), which still need a confirm.
+    full_autonomy: bool = False
 
     database_url: str = "postgresql+psycopg://postgres:postgres@localhost:5432/personal_ai"
 

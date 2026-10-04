@@ -48,4 +48,10 @@ app.include_router(websocket.router)
 async def root() -> dict[str, str]:
     """API information. The web client reads `name` from here, so renaming the
     assistant is a single change in settings."""
-    return {"name": settings.app_name, "version": VERSION, "docs": "/docs", "health": "/health"}
+    return {
+        "name": settings.app_name,
+        "version": VERSION,
+        "voice": settings.voice_engine,
+        "docs": "/docs",
+        "health": "/health",
+    }

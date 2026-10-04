@@ -24,10 +24,10 @@ export function DeviceList() {
     return () => clearInterval(timer);
   }, []);
 
-  if (error) return <p className="text-sm text-red-600">{error}</p>;
-  if (devices === null) return <p className="text-sm text-gray-500">Yüklənir…</p>;
+  if (error) return <p className="text-sm text-rose-400">{error}</p>;
+  if (devices === null) return <p className="text-sm text-white/40">Yüklənir…</p>;
   if (devices.length === 0) {
-    return <p className="text-sm text-gray-500">Hələ cihaz yoxdur. Agent qoşulanda burada görünəcək.</p>;
+    return <p className="text-sm text-white/40">Hələ cihaz yoxdur. Agent qoşulanda burada görünəcək.</p>;
   }
 
   return (
@@ -36,11 +36,11 @@ export function DeviceList() {
         <li key={device.id}>
           <div className="flex items-center justify-between">
             <span className="text-sm font-medium">{device.name}</span>
-            <span className={device.status === "online" ? "text-xs text-green-600" : "text-xs text-gray-400"}>
+            <span className={device.status === "online" ? "text-xs text-emerald-400" : "text-xs text-white/30"}>
               {device.status === "online" ? "● online" : "○ offline"}
             </span>
           </div>
-          <p className="text-xs text-gray-500">
+          <p className="text-xs text-white/40">
             {device.type}
             {device.capabilities.length > 0 && ` · ${device.capabilities.length} bacarıq`}
           </p>

@@ -8,11 +8,15 @@ from pydantic import BaseModel, Field
 
 from app.ai.confirmations import PendingAction, PendingActions
 from app.ai.prompts import build_system_prompt
-from app.ai.router import ActionRecord, AIRouter, RequestedAction
+from app.ai.router import ActionRecord, AIRouter, RequestedAction, take_screenshot
 from app.ai.service import ChatMessage, ToolSpec
 from app.devices.actions import DeviceActions
 from app.devices.manager import DeviceManager
 from app.memory.conversations import ConversationService
+from app.memory.obsidian import ObsidianVault
+
+# How much of the current conversation a new voice session is told about.
+VOICE_HISTORY_MESSAGES = 20
 
 
 class ActionNotFoundError(LookupError):
@@ -41,6 +45,8 @@ class Assistant:
         pending: PendingActions,
         app_name: str,
         owner_name: str = "the owner",
+        vault: ObsidianVault | None = None,
+        style: str = "default",
     ) -> None:
         self._router = router
         self._conversations = conversations
@@ -49,6 +55,8 @@ class Assistant:
         self._pending = pending
         self._app_name = app_name
         self._owner_name = owner_name
+        self._vault = vault or ObsidianVault(None)
+        self._style = style
 
     async def send(
         self,
@@ -65,6 +73,8 @@ class Assistant:
         await self._conversations.append(
             conversation, [user_message, *turn.messages], turn.actions, source_device=source_device
         )
+        self._vault.log_turn("user", message)
+        self._vault.log_turn("assistant", turn.text)
         pending = [
             self._pending.add(conversation.id, request.tool, request.arguments, request.risk)
             for request in turn.requested
@@ -96,6 +106,7 @@ class Assistant:
         reply = ChatMessage(role="assistant", content=text)
 
         await self._conversations.append(conversation, [note, reply], [record])
+        self._vault.log_turn("assistant", text)
         return ChatResult(conversation_id=conversation.id, message=text, actions=[record])
 
     def cancel(self, action_id: str) -> None:
@@ -103,22 +114,44 @@ class Assistant:
             raise ActionNotFoundError(action_id)
 
     async def _system_message(self) -> ChatMessage:
-        return ChatMessage(
-            role="system",
-            content=build_system_prompt(self._app_name, await self._devices.summary(), self._owner_name),
+        return ChatMessage(role="system", content=await self._system_prompt())
+
+    async def _system_prompt(self) -> str:
+        return build_system_prompt(
+            self._app_name, await self._devices.summary(), self._owner_name, self._vault.memory(), self._style
         )
 
     # --- voice ---------------------------------------------------------------
     # Voice uses the same tools, the same risk gating and the same conversation.
 
     async def voice_context(self) -> tuple[str, list[ToolSpec], list[str]]:
-        """Instructions, tools and app names (to help transcription) for a voice session."""
-        system = build_system_prompt(self._app_name, await self._devices.summary(), self._owner_name)
+        """Instructions, tools and app names (to help transcription) for a voice session.
+
+        A realtime session starts empty, so it is told what was just said (typed or
+        spoken); otherwise every new voice session would forget the conversation.
+        """
+        system = await self._system_prompt()
+        conversation = await self._conversations.current()
+        recent = [
+            f"{'User' if message.role == 'user' else 'You'}: {message.content}"
+            for message in await self._conversations.history(conversation.id)
+            if message.role in ("user", "assistant") and message.content
+        ][-VOICE_HISTORY_MESSAGES:]
+        if recent:
+            system += "\n\nThe conversation so far (continue it):\n" + "\n".join(recent)
         return system, self._router.tool_specs(), self._devices.app_names()
+
+    async def live_context(self) -> tuple[str, str, str, list[ChatMessage]]:
+        """App name, owner, memory and the current conversation for a GPT-Live session."""
+        conversation = await self._conversations.current()
+        history = await self._conversations.history(conversation.id)
+        return self._app_name, self._owner_name, self._vault.memory(), history
 
     async def run_voice_tool(self, name: str, arguments: dict[str, Any]) -> VoiceToolResult:
         requested: list[RequestedAction] = []
         payload, record = await self._router.run_tool(name, arguments, requested)
+        # The voice model would receive a screenshot as tens of thousands of text tokens.
+        take_screenshot(payload)
         conversation = await self._conversations.current()
         await self._conversations.log_action(record, conversation.id)
         pending = [
@@ -135,3 +168,4 @@ class Assistant:
             [ChatMessage(role=role, content=text)],  # type: ignore[arg-type]
             source_device="voice",
         )
+        self._vault.log_turn(role, text)

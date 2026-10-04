@@ -29,6 +29,16 @@ services:
         required: false
     environment:
       DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres:5432/personal_ai
+      OBSIDIAN_VAULT_PATH: /vault
+      # Local time for the Obsidian logs. Override with TZ in the repository .env.
+      TZ: ${TZ:-Asia/Baku}
+    volumes:
+      # The Obsidian vault used as long-term memory. Set OBSIDIAN_VAULT in the repository .env.
+      - type: bind
+        source: ${OBSIDIAN_VAULT:-./backend/.vault}
+        target: /vault
+        bind:
+          create_host_path: true
     ports:
       # Bound to localhost only. Override the host port with BACKEND_PORT if 8000 is taken.
       - "127.0.0.1:${BACKEND_PORT:-8000}:8000"

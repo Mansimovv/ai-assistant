@@ -27,6 +27,8 @@ class ChatMessage(BaseModel):
     content: str | None = None
     tool_calls: list[ToolCall] = Field(default_factory=list)  # assistant only
     tool_call_id: str | None = None  # tool results only
+    # Images the model should see (data: URLs), e.g. a screenshot. Never persisted.
+    images: list[str] = Field(default_factory=list, exclude=True)
 
 
 class ToolSpec(BaseModel):
@@ -70,6 +72,14 @@ def _to_openai_message(message: ChatMessage) -> dict[str, Any]:
                     "function": {"name": call.name, "arguments": json.dumps(call.arguments)},
                 }
                 for call in message.tool_calls
+            ],
+        }
+    if message.images:
+        return {
+            "role": message.role,
+            "content": [
+                {"type": "text", "text": message.content or ""},
+                *({"type": "image_url", "image_url": {"url": url, "detail": "high"}} for url in message.images),
             ],
         }
     return {"role": message.role, "content": message.content or ""}

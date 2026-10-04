@@ -21,8 +21,8 @@ SERVER="ws://localhost:$PORT/ws/devices"
 if [ ! -x "$PYTHON" ]; then
   echo "Creating the agent's virtualenv..."
   python3 -m venv "$DIR/.venv"
-  "$DIR/.venv/bin/pip" install --quiet -r "$DIR/requirements.txt"
 fi
+"$DIR/.venv/bin/pip" install --quiet -r "$DIR/requirements.txt"
 
 mkdir -p "$HOME/Library/LaunchAgents"
 cat > "$PLIST" <<PLIST_EOF
@@ -54,3 +54,7 @@ echo "Installed: $LABEL"
 echo "  server: $SERVER"
 echo "  log:    $LOG"
 echo "The agent now starts at login. It keeps retrying while the backend is down."
+echo
+echo "For screen, mouse and keyboard control, allow this program in System Settings >"
+echo "Privacy & Security > Accessibility AND > Screen & System Audio Recording:"
+echo "  $(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$PYTHON")"

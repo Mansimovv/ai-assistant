@@ -2,6 +2,7 @@
 
 import json
 import logging
+import re
 import time
 from typing import Any
 
@@ -14,7 +15,38 @@ from app.tools.registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
 
-MAX_STEPS = 8
+# Using the screen takes many small steps: look, click, type, look again.
+MAX_STEPS = 25
+
+SCREENSHOT_NOTE = (
+    "Screenshot from {tool}. Image pixel (x, y) is screen point (x, y): click exactly what "
+    "you see. Red grid lines every 100 points are labelled 'x,y'."
+)
+
+# Even with full autonomy these always wait for the user: a misheard voice command
+# must never be able to wipe files or the machine.
+DESTRUCTIVE = re.compile(
+    r"\brm\s|\brmdir\b|\bsudo\b|\bmkfs|\bdiskutil\s+(erase|partition)|\bdd\s+if=|"
+    r"\b(shutdown|reboot|halt)\b|\bkillall\b|\bchmod\s+-R|\bchown\s+-R|>\s*/dev/|"
+    r"\bgit\s+push\s+.*(-f\b|--force)|\bgit\s+(reset\s+--hard|clean\s+-\w*f)|"
+    r"\bdrop\s+(database|table)\b|\bdocker\s+(system\s+prune|volume\s+rm)|"
+    r"empty\s+trash|\bdelete\b.*\b(file|folder)\b",
+    re.IGNORECASE,
+)
+
+
+def take_screenshot(payload: dict[str, Any]) -> str | None:
+    """Remove a screenshot from a tool result and return it (a data: URL)."""
+    data = payload.get("data")
+    if isinstance(data, dict) and isinstance(data.get("screenshot"), str):
+        screenshot = data.pop("screenshot")
+        data["screenshot"] = "attached as an image"
+        return screenshot
+    return None
+
+
+def looks_destructive(arguments: dict[str, Any]) -> bool:
+    return any(isinstance(value, str) and DESTRUCTIVE.search(value) for value in arguments.values())
 
 
 class ActionRecord(BaseModel):
@@ -52,11 +84,19 @@ class AIRouter:
     the assistant is allowed to claim.
     """
 
-    def __init__(self, ai: AIService, tools: ToolRegistry, devices: DeviceActions, max_steps: int = MAX_STEPS) -> None:
+    def __init__(
+        self,
+        ai: AIService,
+        tools: ToolRegistry,
+        devices: DeviceActions,
+        max_steps: int = MAX_STEPS,
+        full_autonomy: bool = False,
+    ) -> None:
         self._ai = ai
         self._tools = tools
         self._devices = devices
         self._max_steps = max_steps
+        self._full_autonomy = full_autonomy
 
     async def handle(self, messages: list[ChatMessage]) -> AgentTurn:
         working = list(messages)
@@ -75,12 +115,22 @@ class AIRouter:
                     text=completion.text or "", actions=actions, messages=produced, requested=requested
                 )
 
+            screenshots: list[ChatMessage] = []
             for call in completion.tool_calls:
                 payload, record = await self._run(call, requested)
+                if screenshot := take_screenshot(payload):
+                    screenshots.append(
+                        ChatMessage(role="user", content=SCREENSHOT_NOTE.format(tool=call.name), images=[screenshot])
+                    )
                 result = ChatMessage(role="tool", tool_call_id=call.id, content=json.dumps(payload))
                 working.append(result)
                 produced.append(result)
                 actions.append(record)
+            if screenshots:
+                # Images cannot travel in a tool result, so they follow as a message the model
+                # sees. Only the latest screen matters, and each costs tokens: drop older ones.
+                working = [message for message in working if not message.images]
+                working.append(screenshots[-1])
 
         # Step budget spent: ask for a final answer without tools so the model has to
         # summarise what actually happened instead of looping forever.
@@ -109,6 +159,11 @@ class AIRouter:
             for tool in self._tools.list_tools()
         ]
 
+    def _needs_confirmation(self, call: ToolCall) -> bool:
+        if not self._devices.knows(call.name) or self._devices.risk(call.name) is not Risk.HIGH:
+            return False
+        return not self._full_autonomy or looks_destructive(call.arguments)
+
     async def _run(
         self, call: ToolCall, requested: list[RequestedAction]
     ) -> tuple[dict[str, Any], ActionRecord]:
@@ -120,7 +175,7 @@ class AIRouter:
         """Run one tool under the same rules for every channel (text and voice)."""
         call = ToolCall(id="", name=name, arguments=arguments)
         started = time.monotonic()
-        if self._devices.knows(call.name) and self._devices.risk(call.name) is Risk.HIGH:
+        if self._needs_confirmation(call):
             # Hold it back: the user confirms in the UI, then the brain runs it.
             requested.append(
                 RequestedAction(tool=call.name, arguments=call.arguments, risk=self._devices.risk(call.name))
