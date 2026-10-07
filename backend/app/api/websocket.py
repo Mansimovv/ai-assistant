@@ -29,6 +29,14 @@ async def device_socket(websocket: WebSocket, devices: DeviceManagerDep, setting
 
     The device counts as online exactly while this socket is open.
     """
+    # Browsers send an Origin with every WebSocket, so without this any web page could
+    # connect to localhost and pose as a device. Device agents send no Origin at all.
+    origin = websocket.headers.get("origin")
+    if origin is not None:
+        logger.warning("Rejected device socket from origin %s", origin)
+        await websocket.close(status.WS_1008_POLICY_VIOLATION, "Origin not allowed")
+        return
+
     await websocket.accept()
     try:
         message = RegisterMessage.model_validate_json(await websocket.receive_text())

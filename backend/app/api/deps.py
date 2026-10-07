@@ -13,7 +13,7 @@ from app.ai.confirmations import PendingActions, pending_actions
 from app.ai.live import LiveService
 from app.ai.router import AIRouter
 from app.ai.speech import SpeechService
-from app.ai.service import AIService, OpenAIService
+from app.ai.service import AIService, HybridAIService, OpenAIService
 from app.ai.voice import VoiceService
 from app.core.config import Settings, get_settings
 from app.database.session import get_session
@@ -31,7 +31,12 @@ SessionDep = Annotated[AsyncSession, Depends(get_session)]
 def get_ai_service() -> AIService:
     settings = get_settings()
     api_key = settings.openai_api_key.get_secret_value() if settings.openai_api_key else None
-    return OpenAIService(api_key=api_key, model=settings.openai_model)
+    cloud = OpenAIService(api_key=api_key, model=settings.openai_model)
+    if settings.ai_provider == "openai":
+        return cloud
+    # Ollama speaks the same API; it ignores the key but the client requires one.
+    local = OpenAIService(api_key="ollama", model=settings.ollama_model, base_url=settings.ollama_base_url)
+    return local if settings.ai_provider == "ollama" else HybridAIService(local=local, cloud=cloud)
 
 
 @lru_cache

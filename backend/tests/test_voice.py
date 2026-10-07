@@ -66,7 +66,7 @@ def test_voice_session_is_given_app_names_for_transcription(client: TestClient) 
             {
                 "type": "register",
                 "device": {"id": "macbook", "name": "MacBook", "type": "mac"},
-                "capabilities": ["open_app", "run_in_terminal"],
+                "capabilities": ["open_app", "run_in_terminal", "look_at_screen", "mouse_click"],
                 "apps": ["Termius", "Safari"],
             }
         )
@@ -76,6 +76,9 @@ def test_voice_session_is_given_app_names_for_transcription(client: TestClient) 
 
     assert captured["vocabulary"] == ["Safari", "Termius"]
     assert "mac_open_app" in captured["tools"]
+    # Voice gets no screenshots, so screen-control tools would only cost tokens there.
+    assert "mac_look_at_screen" not in captured["tools"]
+    assert "mac_mouse_click" not in captured["tools"]
     assert "MacBook" in str(captured["instructions"])
 
 

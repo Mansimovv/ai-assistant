@@ -17,6 +17,9 @@ from app.memory.obsidian import ObsidianVault
 
 # How much of the current conversation a new voice session is told about.
 VOICE_HISTORY_MESSAGES = 20
+# Voice never sees screenshots (see run_voice_tool), so screen control is useless there
+# and its schemas would only be paid for on every spoken reply.
+SCREEN_CAPABILITIES = {"look_at_screen", "mouse_click", "mouse_move", "scroll", "type_text", "press_keys"}
 
 
 class ActionNotFoundError(LookupError):
@@ -139,7 +142,10 @@ class Assistant:
         ][-VOICE_HISTORY_MESSAGES:]
         if recent:
             system += "\n\nThe conversation so far (continue it):\n" + "\n".join(recent)
-        return system, self._router.tool_specs(), self._devices.app_names()
+        tools = [
+            tool for tool in self._router.tool_specs() if tool.name.partition("_")[2] not in SCREEN_CAPABILITIES
+        ]
+        return system, tools, self._devices.app_names()
 
     async def live_context(self) -> tuple[str, str, str, list[ChatMessage]]:
         """App name, owner, memory and the current conversation for a GPT-Live session."""

@@ -53,3 +53,14 @@ def test_device_tool_without_an_online_device_is_rejected(client: TestClient) ->
 
     assert response.status_code == 409
     assert "No online device" in response.json()["detail"]
+
+
+def test_web_pages_cannot_connect_as_a_device(client: TestClient) -> None:
+    """A browser sends an Origin; any site could otherwise reach localhost and pose as a device."""
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with client.websocket_connect("/ws/devices", headers={"origin": "https://evil.example"}) as ws:
+            ws.send_json(REGISTER)
+            ws.receive_json()
+
+    assert exc_info.value.code == 1008
+    assert client.get("/api/v1/devices").json() == []

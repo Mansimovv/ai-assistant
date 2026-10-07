@@ -28,6 +28,7 @@ import tempfile
 import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 import websockets
 
@@ -38,6 +39,9 @@ COMMAND_TIMEOUT = 15
 OUTPUT_LIMIT = 4000
 VERIFY_ATTEMPTS = 6  # ~3 seconds
 APP_FOLDERS = ("/Applications", "/System/Applications", "/Applications/Utilities")
+READ_LIMIT = 100_000
+# Never hand these to a model, even in single-user mode.
+SECRET_PATHS = (".ssh", "Library/Keychains", ".gnupg", ".aws/credentials")
 PROJECT_FOLDERS = ("~/Projects", "~/Developer", "~/Desktop", "~/Documents", "~/code")
 
 # Spoken or typed shortcuts that fuzzy matching alone would not get right.
@@ -165,6 +169,11 @@ def expand(path: str) -> Path:
     return Path(os.path.expandvars(path)).expanduser()
 
 
+def is_secret(path: Path) -> bool:
+    text = str(path)
+    return any(part in text for part in SECRET_PATHS)
+
+
 def clip(text: str) -> str:
     return text if len(text) <= OUTPUT_LIMIT else text[:OUTPUT_LIMIT] + "\n…(truncated)"
 
@@ -274,6 +283,60 @@ async def open_path(path: str) -> tuple[bool, Any, str | None, bool]:
     return True, {"opened": target}, None, False
 
 
+async def list_dir(path: str = "~") -> tuple[bool, Any, str | None, bool]:
+    directory = expand(path)
+    if not directory.is_dir():
+        return False, None, f"{directory} is not a directory", True
+    entries = sorted(
+        (f"{child.name}/" if child.is_dir() else child.name)
+        for child in directory.iterdir()
+        if not child.name.startswith(".")
+    )
+    return True, {"path": str(directory), "count": len(entries), "entries": entries[:200]}, None, True
+
+
+async def read_file(path: str) -> tuple[bool, Any, str | None, bool]:
+    target = expand(path)
+    if is_secret(target):
+        return False, None, "Refusing to read credentials", True
+    if not target.is_file():
+        return False, None, f"{target} is not a file", True
+    try:
+        content = target.read_text(errors="replace")[:READ_LIMIT]
+    except OSError as exc:
+        return False, None, str(exc), True
+    return True, {"path": str(target), "lines": content.count("\n") + 1, "content": content}, None, True
+
+
+async def write_file(path: str, content: str) -> tuple[bool, Any, str | None, bool]:
+    target = expand(path)
+    if is_secret(target):
+        return False, None, "Refusing to write credentials", True
+    existed = target.is_file()
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content)
+    except OSError as exc:
+        return False, None, str(exc), True
+    return True, {"path": str(target), "bytes": len(content), "overwrote": existed}, None, True
+
+
+async def search_files(query: str, folder: str = "~/Projects") -> tuple[bool, Any, str | None, bool]:
+    """Search inside files with ripgrep (falls back to grep)."""
+    directory = expand(folder)
+    if not directory.is_dir():
+        return False, None, f"{directory} is not a directory", True
+    tool = "rg" if shutil.which("rg") else "grep"
+    command = (
+        ["rg", "--line-number", "--max-count", "3", "--max-filesize", "1M", query, str(directory)]
+        if tool == "rg"
+        else ["grep", "-rn", "--max-count=3", query, str(directory)]
+    )
+    result = run(command, timeout=DEFAULT_TIMEOUT)
+    matches = [line for line in result.stdout.splitlines() if line][:50]
+    return True, {"query": query, "folder": str(directory), "matches": matches, "count": len(matches)}, None, True
+
+
 async def run_command(command: str) -> tuple[bool, Any, str | None, bool]:
     try:
         result = run(["/bin/zsh", "-lc", command], timeout=COMMAND_TIMEOUT)
@@ -357,6 +420,57 @@ async def set_volume(level: int) -> tuple[bool, Any, str | None, bool]:
         return False, None, clip(result.stderr.strip()) or "Could not set the volume", True
     actual = run(["osascript", "-e", "output volume of (get volume settings)"]).stdout.strip()
     return True, {"volume_percent": actual}, None, True
+
+
+MEDIA_COMMANDS = {"play": "play", "pause": "pause", "next": "next track", "previous": "previous track"}
+
+
+async def media(action: str, app: str = "Spotify", query: str | None = None) -> tuple[bool, Any, str | None, bool]:
+    """Fixed player commands, so music needs no free-form AppleScript and no confirmation.
+
+    Afterwards the player is asked what it is really doing, which is what gets reported.
+    """
+    if app not in ("Spotify", "Music"):
+        return False, None, f"Unsupported player {app!r}: use Spotify or Music", False
+    if action == "search":
+        if not query:
+            return False, None, "search needs a query", False
+        if app == "Spotify":
+            run(["open", f"spotify:search:{quote(query)}"])
+            return True, {"opened": f"Spotify search for {query!r}", "playing": False}, None, True
+        script = f'tell application "Music" to play (first track of library playlist 1 whose name contains {json.dumps(query, ensure_ascii=False)})'
+    elif action in MEDIA_COMMANDS:
+        script = f'tell application "{app}" to {MEDIA_COMMANDS[action]}'
+    elif action == "now_playing":
+        script = None
+    else:
+        return False, None, f"Unknown media action {action!r}", False
+
+    if script:
+        ok, _, error, _ = await run_applescript(script)
+        if not ok:
+            return False, None, error, True
+        await asyncio.sleep(0.5)  # the player needs a moment to change state
+    state = run(
+        [
+            "osascript",
+            "-e", f'tell application "{app}"',
+            "-e", "set track_name to \"\"",
+            "-e", 'try',
+            "-e", 'set track_name to (name of current track) & " - " & (artist of current track)',
+            "-e", "end try",
+            "-e", 'return (player state as text) & " | " & track_name',
+            "-e", "end tell",
+        ],
+        timeout=COMMAND_TIMEOUT,  # Music can take a while to launch
+    )
+    if state.returncode != 0:
+        return True, {"player": app, "state": "unknown"}, None, True
+    player_state, _, track = state.stdout.partition("|")
+    data = {"player": app, "state": player_state.strip(), "track": track.strip() or None}
+    if action == "play" and data["state"] != "playing":
+        return False, data, f"{app} did not start: nothing is queued. Use search to pick a song.", True
+    return True, data, None, True
 
 
 async def list_projects() -> tuple[bool, Any, str | None, bool]:
@@ -717,6 +831,255 @@ async def press_keys(keys: str) -> tuple[bool, Any, str | None, bool]:
     return True, {"pressed": keys}, None, False
 
 
+# --- any app as text (macOS Accessibility) --------------------------------------------
+# What screen readers use: every app - Safari, Chrome, Firefox, VS Code, Telegram, Finder -
+# describes its window as a tree of buttons, fields, links and text. read_ui turns that
+# into numbered lines, so the model works by ref like a browser agent, with no screenshot
+# and no vision model. Only the Accessibility permission is needed.
+
+UI_ELEMENT_LIMIT = 250
+UI_TEXT_LIMIT = 4000
+UI_SECONDS = 3.0
+UI_NAME_LIMIT = 80
+UI_ACTIONABLE = {
+    "AXButton", "AXLink", "AXTextField", "AXTextArea", "AXSearchField", "AXCheckBox",
+    "AXRadioButton", "AXPopUpButton", "AXMenuButton", "AXMenuItem", "AXTab", "AXComboBox",
+    "AXSlider", "AXDisclosureTriangle", "AXCell", "AXRow", "AXSwitch", "AXIncrementor",
+}
+UI_TEXT_ROLES = {"AXStaticText", "AXHeading"}
+# ref -> (element, its running application) from the latest read_ui; refs are only valid
+# until the next read.
+_ui_refs: dict[int, tuple[Any, Any]] = {}
+_ui_enabled: set[int] = set()
+
+
+def _ui_app(name: str | None) -> tuple[Any, Any] | str:
+    """(running application, its accessibility root), or why it is unavailable."""
+    import ApplicationServices as AS
+    from AppKit import NSWorkspace
+
+    workspace = NSWorkspace.sharedWorkspace()
+    if name:
+        wanted = resolve_app(name).lower()
+        app = next(
+            (a for a in workspace.runningApplications() if (a.localizedName() or "").lower() == wanted), None
+        )
+        if app is None:
+            return f"{name} is not running: open it first"
+    else:
+        app = workspace.frontmostApplication()
+    root = AS.AXUIElementCreateApplication(app.processIdentifier())
+    AS.AXUIElementSetMessagingTimeout(root, 0.5)
+    return app, root
+
+
+def _ui_name(element: Any, role: str) -> str:
+    for attribute in ("AXTitle", "AXDescription", "AXPlaceholderValue", "AXHelp"):
+        value = _attribute(element, attribute)
+        if isinstance(value, str) and value.strip():
+            return " ".join(value.split())[:UI_NAME_LIMIT]
+    if role in UI_TEXT_ROLES:
+        value = _attribute(element, "AXValue")
+        return " ".join(str(value).split())[:UI_NAME_LIMIT] if value else ""
+    # Web links and buttons often carry their label in a text child.
+    for child in (_attribute(element, "AXChildren") or [])[:3]:
+        if _attribute(child, "AXRole") == "AXStaticText" and (value := _attribute(child, "AXValue")):
+            return " ".join(str(value).split())[:UI_NAME_LIMIT]
+    return ""
+
+
+def _ui_frame(element: Any) -> tuple[float, float, float, float] | None:
+    import ApplicationServices as AS
+
+    position, size = _attribute(element, "AXPosition"), _attribute(element, "AXSize")
+    if position is None or size is None:
+        return None
+    _, point = AS.AXValueGetValue(position, AS.kAXValueTypeCGPoint, None)
+    _, extent = AS.AXValueGetValue(size, AS.kAXValueTypeCGSize, None)
+    return point.x, point.y, extent.width, extent.height
+
+
+async def read_ui(app: str | None = None, query: str | None = None) -> tuple[bool, Any, str | None, bool]:
+    import ApplicationServices as AS
+
+    if error := _input_allowed():
+        return False, None, error, True
+    found = _ui_app(app)
+    if isinstance(found, str):
+        return False, None, found, True
+    running, root = found
+    pid = running.processIdentifier()
+    if pid not in _ui_enabled:
+        # Chrome and Electron apps only build the tree of their web content for assistive
+        # apps that ask; it takes a moment the first time.
+        AS.AXUIElementSetAttributeValue(root, "AXManualAccessibility", True)
+        AS.AXUIElementSetAttributeValue(root, "AXEnhancedUserInterface", True)
+        _ui_enabled.add(pid)
+        await asyncio.sleep(1.2)  # measured: Chrome needs ~1s to expose page content
+    window = _attribute(root, "AXFocusedWindow") or _attribute(root, "AXMainWindow")
+    if window is None:
+        return False, None, f"{running.localizedName()} has no open window", True
+    window_frame = _ui_frame(window)
+
+    needle = (query or "").lower()
+    _ui_refs.clear()
+    lines: list[str] = []
+    texts: list[str] = []
+    text_size = 0
+    deadline = time.monotonic() + UI_SECONDS
+    queue = [window]
+    while queue and len(_ui_refs) < UI_ELEMENT_LIMIT and time.monotonic() < deadline:
+        element = queue.pop(0)
+        role = _attribute(element, "AXRole") or ""
+        if role in UI_TEXT_ROLES:
+            text = _ui_name(element, role)
+            if text and text_size < UI_TEXT_LIMIT and (not needle or needle in text.lower()):
+                texts.append(f"# {text}" if role == "AXHeading" else text)
+                text_size += len(text)
+            if role == "AXStaticText":
+                continue
+        queue.extend(_attribute(element, "AXChildren") or [])
+        if role not in UI_ACTIONABLE:
+            continue
+        frame = _ui_frame(element)
+        if frame is None or frame[2] <= 1 or frame[3] <= 1:
+            continue  # collapsed or hidden
+        name = _ui_name(element, role)
+        value = _attribute(element, "AXValue") if role in ("AXTextField", "AXTextArea", "AXSearchField", "AXComboBox", "AXCheckBox", "AXSlider") else None
+        if needle and needle not in name.lower() and needle not in str(value or "").lower():
+            continue
+        if not name and value is None and role in ("AXCell", "AXRow"):
+            continue  # layout rows with nothing to say
+        ref = len(_ui_refs) + 1
+        _ui_refs[ref] = (element, running)
+        line = f"[{ref}] {role.removeprefix('AX').lower()} \"{name}\""
+        if value not in (None, ""):
+            line += f" value=\"{' '.join(str(value).split())[:60]}\""
+        if _attribute(element, "AXEnabled") is False:
+            line += " disabled"
+        if window_frame and not (window_frame[1] <= frame[1] <= window_frame[1] + window_frame[3]):
+            line += " (scroll)"
+        lines.append(line)
+
+    data = {
+        "app": running.localizedName(),
+        "window": _attribute(window, "AXTitle") or "",
+        "elements": "\n".join(lines) or "none found",
+        "text": "\n".join(texts)[:UI_TEXT_LIMIT],
+    }
+    if queue and (len(_ui_refs) >= UI_ELEMENT_LIMIT or time.monotonic() >= deadline):
+        data["note"] = "Window is large; not everything is listed. Use query to find a specific element."
+    return True, data, None, True
+
+
+def _ui_ref(ref: int) -> tuple[Any, Any] | str:
+    entry = _ui_refs.get(ref)
+    return entry if entry else f"No element [{ref}]: call read_ui again (refs change with every read)"
+
+
+def _ui_where(element: Any) -> dict[str, str]:
+    """Frontmost app and the element's window title after an action, so the model sees what
+    changed. The element's own window, because an app's AXFocusedWindow can lag behind."""
+    from AppKit import NSWorkspace
+
+    app = NSWorkspace.sharedWorkspace().frontmostApplication()
+    window = _attribute(element, "AXWindow")
+    return {"app": app.localizedName() if app else "", "window": (_attribute(window, "AXTitle") or "") if window else ""}
+
+
+async def ui_press(ref: int) -> tuple[bool, Any, str | None, bool]:
+    import ApplicationServices as AS
+
+    entry = _ui_ref(ref)
+    if isinstance(entry, str):
+        return False, None, entry, False
+    element, _ = entry
+    if AS.AXUIElementPerformAction(element, "AXPress") != 0:
+        # Some elements (web rows, custom views) have no press action: click their centre.
+        frame = _ui_frame(element)
+        if frame is None:
+            return False, None, f"Element [{ref}] is gone: call read_ui again", False
+        x, y, width, height = frame
+        ok, _, error, _ = await mouse_click(round(x + width / 2), round(y + height / 2))
+        if not ok:
+            return False, None, error, False
+    await asyncio.sleep(0.6)  # let the app react before reporting where we are
+    return True, {"pressed": ref, **_ui_where(element)}, None, False
+
+
+def _post_to_app(pid: int, key_code: int = 0, character: str | None = None, flags: int = 0) -> None:
+    """One key press delivered straight to an app. Measured: keys posted to the global HID
+    stream do not reliably reach Chrome's web content, keys posted to its process do."""
+    import Quartz
+
+    for is_down in (True, False):
+        event = Quartz.CGEventCreateKeyboardEvent(None, key_code, is_down)
+        if character is not None:
+            Quartz.CGEventKeyboardSetUnicodeString(event, len(character.encode("utf-16-le")) // 2, character)
+        if flags:
+            Quartz.CGEventSetFlags(event, flags)
+        Quartz.CGEventPostToPid(pid, event)
+
+
+async def _ui_value(element: Any, text: str) -> Any:
+    """The field's value once it contains `text` (apps update their tree a moment later)."""
+    value = None
+    for _ in range(10):
+        value = _attribute(element, "AXValue")
+        if not isinstance(value, str) or text in value:
+            break
+        await asyncio.sleep(0.1)
+    return value
+
+
+async def ui_type(ref: int, text: str, clear: bool = True, submit: bool = False) -> tuple[bool, Any, str | None, bool]:
+    import ApplicationServices as AS
+    import Quartz
+    from AppKit import NSApplicationActivateIgnoringOtherApps
+
+    if error := _input_allowed():
+        return False, None, error, True
+    entry = _ui_ref(ref)
+    if isinstance(entry, str):
+        return False, None, entry, False
+    element, app = entry
+    pid = app.processIdentifier()
+    # Show the user where it happens: the field's app and its own window (Chrome often has several).
+    app.activateWithOptions_(NSApplicationActivateIgnoringOtherApps)
+    if window := _attribute(element, "AXWindow"):
+        AS.AXUIElementPerformAction(window, "AXRaise")
+    if AS.AXUIElementSetAttributeValue(element, "AXFocused", True) != 0:
+        frame = _ui_frame(element)
+        if frame is None:
+            return False, None, f"Element [{ref}] is gone: call read_ui again", False
+        await mouse_click(round(frame[0] + frame[2] / 2), round(frame[1] + frame[3] / 2))
+    await asyncio.sleep(0.15)
+
+    # Setting the value is instant and lands in the right field even when the app has
+    # several windows; browsers fire the page's input events for it.
+    current = _attribute(element, "AXValue")
+    wanted = text if clear or not isinstance(current, str) else current + text
+    value = None
+    if AS.AXUIElementSetAttributeValue(element, "AXValue", wanted) == 0:
+        value = await _ui_value(element, text)
+    if not (isinstance(value, str) and text in value):
+        # Not settable (some rich editors): type it, straight into the app.
+        if clear:
+            _post_to_app(pid, KEY_CODES["a"], flags=Quartz.kCGEventFlagMaskCommand)
+        for character in text:
+            _post_to_app(pid, character=character)
+            await asyncio.sleep(0.008)
+        value = await _ui_value(element, text)
+    if isinstance(value, str) and text not in value:
+        # Never press Enter in a field that does not hold the text.
+        return False, {"value": value[:200], **_ui_where(element)}, "The text did not reach the field: call read_ui and try again", True
+    if submit:
+        _post_to_app(pid, KEY_CODES["enter"])
+        await asyncio.sleep(0.8)
+    data = {"typed": len(text), "value": str(value)[:200] if value is not None else None, **_ui_where(element)}
+    return True, data, None, value is not None
+
+
 HANDLERS = {
     "open_app": open_app,
     "close_app": close_app,
@@ -726,11 +1089,16 @@ HANDLERS = {
     "find_files": find_files,
     "open_path": open_path,
     "list_apps": list_apps,
+    "list_dir": list_dir,
+    "read_file": read_file,
+    "write_file": write_file,
+    "search_files": search_files,
     "run_command": run_command,
     "run_in_terminal": run_in_terminal,
     "run_applescript": run_applescript,
     "system_info": system_info,
     "set_volume": set_volume,
+    "media": media,
     "list_projects": list_projects,
     "claude_code": claude_code,
     "look_at_screen": look_at_screen,
@@ -739,6 +1107,9 @@ HANDLERS = {
     "scroll": scroll,
     "type_text": type_text,
     "press_keys": press_keys,
+    "read_ui": read_ui,
+    "ui_press": ui_press,
+    "ui_type": ui_type,
 }
 
 

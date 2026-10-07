@@ -14,7 +14,7 @@ import logging
 from openai import AsyncOpenAI, OpenAIError
 from pydantic import BaseModel
 
-from app.ai.service import AIServiceError, AIServiceNotConfiguredError, ToolSpec
+from app.ai.service import AIServiceError, AIServiceNotConfiguredError, ToolSpec, without_titles
 
 logger = logging.getLogger(__name__)
 
@@ -121,7 +121,7 @@ class VoiceService:
                             "type": "function",
                             "name": tool.name,
                             "description": tool.description,
-                            "parameters": tool.parameters,
+                            "parameters": without_titles(tool.parameters),
                         }
                         for tool in tools
                     ]

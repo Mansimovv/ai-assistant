@@ -141,3 +141,43 @@ async def test_invalid_json_arguments_do_not_crash_the_turn() -> None:
 
     # Empty arguments fail validation later, and that error goes back to the model.
     assert completion.tool_calls == [ToolCall(id="call_1", name="mac_open_app", arguments={})]
+
+
+@pytest.mark.anyio
+async def test_schema_titles_are_dropped_but_a_field_named_title_stays() -> None:
+    captured: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.update(json.loads(request.content))
+        return _reply(TEXT_RESPONSE)
+
+    schema = {
+        "title": "NoteParameters",
+        "type": "object",
+        "properties": {"title": {"title": "Title", "type": "string"}},
+    }
+    await _service(handler).complete(
+        [ChatMessage(role="user", content="qeyd yaz")], [ToolSpec(name="note", description="", parameters=schema)]
+    )
+
+    assert captured["tools"][0]["function"]["parameters"] == {
+        "type": "object",
+        "properties": {"title": {"type": "string"}},
+    }
+
+
+@pytest.mark.anyio
+async def test_token_usage_is_returned_with_the_completion() -> None:
+    body = {
+        **TEXT_RESPONSE,
+        "usage": {
+            "prompt_tokens": 1200,
+            "completion_tokens": 15,
+            "total_tokens": 1215,
+            "prompt_tokens_details": {"cached_tokens": 1024},
+        },
+    }
+
+    completion = await _service(lambda request: _reply(body)).complete([ChatMessage(role="user", content="salam")])
+
+    assert (completion.input_tokens, completion.cached_tokens, completion.output_tokens) == (1200, 1024, 15)

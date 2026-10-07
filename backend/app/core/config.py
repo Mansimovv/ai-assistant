@@ -1,5 +1,5 @@
 from functools import lru_cache
-from typing import Self
+from typing import Literal, Self
 
 from pydantic import SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -21,6 +21,13 @@ class Settings(BaseSettings):
 
     openai_api_key: SecretStr | None = None
     openai_model: str = "gpt-5.4-mini"
+
+    # Text brain: "openai", "ollama" (local, free) or "hybrid" (Ollama first, OpenAI for
+    # screenshots and for steps the local model gets wrong). Voice always uses OpenAI.
+    ai_provider: Literal["openai", "ollama", "hybrid"] = "openai"
+    # Ollama runs on the Mac itself (for the GPU); the backend container reaches it here.
+    ollama_base_url: str = "http://host.docker.internal:11434/v1"
+    ollama_model: str = "qwen3:8b"
 
     # Voice engine: "live" (GPT-Live: full-duplex voice that delegates real work to the
     # brain) or "realtime" (one realtime model listens, thinks and acts itself).

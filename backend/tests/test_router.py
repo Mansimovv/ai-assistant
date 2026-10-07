@@ -130,7 +130,9 @@ async def test_screenshot_is_shown_to_the_model_but_not_stored() -> None:
     agents = AgentManager()
     bus = CommandBus(agents)
     image = "data:image/jpeg;base64,AAAA"
-    socket = FakeSocket(bus, CommandResult(ok=True, data={"texts": [], "screenshot": image}, verified=True))
+    socket = FakeSocket(
+        bus, CommandResult(ok=True, data={"texts": ["Safari"], "screenshot": image}, verified=True)
+    )
     agents.connect(AgentConnection("mac", "MacBook", "mac", ["look_at_screen"], socket, []))  # type: ignore[arg-type]
     ai = ScriptedAI(
         Completion(tool_calls=[ToolCall(id="c1", name="mac_look_at_screen", arguments={})]),
@@ -144,5 +146,30 @@ async def test_screenshot_is_shown_to_the_model_but_not_stored() -> None:
     seen = ai.calls[-1]
     assert [m.images for m in seen if m.images] == [[image]]  # only the latest screenshot
     assert _to_openai_message(seen[-1])["content"][1]["image_url"]["url"] == image
+    # Only the latest screen reading is resent in full; the older one is shortened.
+    screen_readings = [m.content or "" for m in seen if m.role == "tool"]
+    assert ["Safari" in content for content in screen_readings] == [False, True]
+    # The stored turn keeps both readings intact.
+    assert sum("Safari" in (m.content or "") for m in turn.messages if m.role == "tool") == 2
     assert all(not m.images and image not in (m.content or "") for m in turn.messages)
     assert turn.text == "Ekranda Safari açıqdır."
+
+
+@pytest.mark.anyio
+async def test_turn_logs_the_tokens_of_every_step(connected_mac, caplog) -> None:
+    devices, _ = connected_mac
+    ai = ScriptedAI(
+        Completion(
+            tool_calls=[ToolCall(id="c1", name="mac_open_app", arguments={"name": "TextEdit"})],
+            input_tokens=1000,
+            cached_tokens=800,
+            output_tokens=20,
+        ),
+        Completion(text="Açdım.", input_tokens=1100, cached_tokens=1000, output_tokens=10),
+    )
+    router = AIRouter(ai, create_default_registry(), devices)
+
+    with caplog.at_level("INFO", logger="app.ai.router"):
+        await router.handle(_messages("TextEdit aç"))
+
+    assert "turn steps=2 tokens in=2100 (cached=1800) out=30" in caplog.text

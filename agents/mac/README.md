@@ -50,6 +50,10 @@ It reconnects by itself if the backend restarts.
 | `find_files` | low | Find files by name in a folder (max depth 4) |
 | `open_path` | low | Open a file, folder or URL |
 | `list_apps` | low | Every application installed on this Mac |
+| `media` | low | Spotify/Music: play, pause, next, previous, now playing, search; reports the real player state |
+| `read_ui` | low | Any app's window as text (every browser too): buttons, links, fields as `[ref] role "name"` plus visible text. No screenshot; needs only Accessibility |
+| `ui_press` | medium | Press an element by ref (AXPress, or a click on its centre) |
+| `ui_type` | medium | Put text into a field by ref (sets the value, or types straight into that app), optionally Enter; checks the field really holds it |
 | `run_in_terminal` | **high** | Open Terminal and run a command **visibly** — ssh to a server, tail logs, anything interactive |
 | `run_command` | **high** | Any shell command, invisibly (output returned to the assistant) |
 

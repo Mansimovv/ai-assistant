@@ -42,6 +42,10 @@ class ToolSpec(BaseModel):
 class Completion(BaseModel):
     text: str | None = None
     tool_calls: list[ToolCall] = Field(default_factory=list)
+    # Token usage of this call, summed per turn by the router to show what a command cost.
+    input_tokens: int = 0
+    cached_tokens: int = 0
+    output_tokens: int = 0
 
 
 class AIServiceError(Exception):
@@ -102,7 +106,7 @@ class OpenAIService(AIService):
             request["tools"] = [
                 {
                     "type": "function",
-                    "function": {"name": t.name, "description": t.description, "parameters": t.parameters},
+                    "function": {"name": t.name, "description": t.description, "parameters": without_titles(t.parameters)},
                 }
                 for t in tools
             ]
@@ -113,15 +117,68 @@ class OpenAIService(AIService):
             logger.exception("OpenAI request failed")
             raise AIServiceError("OpenAI request failed") from exc
 
-        if response.usage:  # visible token cost per call
-            logger.info(
-                "model=%s tokens in=%s out=%s",
-                response.model,
-                response.usage.prompt_tokens,
-                response.usage.completion_tokens,
-            )
         message = response.choices[0].message
-        return Completion(text=message.content, tool_calls=[_parse_tool_call(c) for c in message.tool_calls or []])
+        completion = Completion(
+            text=message.content, tool_calls=[_parse_tool_call(c) for c in message.tool_calls or []]
+        )
+        if usage := response.usage:
+            details = usage.prompt_tokens_details
+            completion.input_tokens = usage.prompt_tokens
+            completion.cached_tokens = (details.cached_tokens or 0) if details else 0
+            completion.output_tokens = usage.completion_tokens
+            logger.info(
+                "model=%s tokens in=%s (cached=%s) out=%s",
+                response.model,
+                completion.input_tokens,
+                completion.cached_tokens,
+                completion.output_tokens,
+            )
+        return completion
+
+
+class HybridAIService(AIService):
+    """A free local model (Ollama) first; the cloud model only for steps it cannot do.
+
+    The cloud model takes over when the step needs vision (a screenshot), when the local
+    model fails or answers with nothing, or when it calls a tool that was not offered.
+    """
+
+    def __init__(self, local: AIService, cloud: AIService) -> None:
+        self._local = local
+        self._cloud = cloud
+
+    async def complete(self, messages: list[ChatMessage], tools: list[ToolSpec] | None = None) -> Completion:
+        if any(message.images for message in messages):
+            return await self._cloud.complete(messages, tools)
+        try:
+            completion = await self._local.complete(messages, tools)
+        except AIServiceError:
+            logger.warning("Local model failed; the cloud model takes this step")
+            return await self._cloud.complete(messages, tools)
+
+        offered = {tool.name for tool in tools or []}
+        unknown = [call.name for call in completion.tool_calls if call.name not in offered]
+        if unknown:
+            logger.warning("Local model called unknown tools %s; the cloud model takes this step", unknown)
+            return await self._cloud.complete(messages, tools)
+        if not completion.text and not completion.tool_calls:
+            logger.warning("Local model answered with nothing; the cloud model takes this step")
+            return await self._cloud.complete(messages, tools)
+        return completion
+
+
+def without_titles(schema: Any) -> Any:
+    """Pydantic adds a "title" to every schema and field; the model never needs them (~11% of tool tokens)."""
+    if isinstance(schema, dict):
+        # A field named "title" is a dict under "properties" and stays; only the labels go.
+        return {
+            key: without_titles(value)
+            for key, value in schema.items()
+            if not (key == "title" and isinstance(value, str))
+        }
+    if isinstance(schema, list):
+        return [without_titles(item) for item in schema]
+    return schema
 
 
 def _parse_tool_call(call: Any) -> ToolCall:

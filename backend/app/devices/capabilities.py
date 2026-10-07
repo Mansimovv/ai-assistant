@@ -56,7 +56,7 @@ class RunInTerminalParameters(ToolParameters):
 class RunAppleScriptParameters(ToolParameters):
     script: str = Field(
         description=(
-            "AppleScript source, e.g. 'tell application \"Music\" to play' or "
+            "AppleScript source, e.g. 'tell application \"Finder\" to open home' or "
             "'display notification \"Hazırdır\" with title \"Jarvis\"'."
         )
     )
@@ -64,6 +64,12 @@ class RunAppleScriptParameters(ToolParameters):
 
 class SetVolumeParameters(ToolParameters):
     level: int = Field(ge=0, le=100, description="Output volume in percent, 0 mutes.")
+
+
+class MediaParameters(ToolParameters):
+    action: Literal["play", "pause", "next", "previous", "now_playing", "search"]
+    app: Literal["Spotify", "Music"] = "Spotify"
+    query: str | None = Field(default=None, description="Song or artist, only for action=search.")
 
 
 class ClaudeCodeParameters(ToolParameters):
@@ -107,6 +113,21 @@ class PressKeysParameters(ToolParameters):
             "'cmd+space', 'cmd+t', 'cmd+shift+4', 'tab tab enter'."
         )
     )
+
+
+class ReadUIParameters(ToolParameters):
+    app: str | None = Field(default=None, description="Application to read; default is the frontmost one.")
+    query: str | None = Field(default=None, description="Only list elements and text containing this.")
+
+
+class UIRefParameters(ToolParameters):
+    ref: int = Field(description="Element ref from the latest read_ui.")
+
+
+class UITypeParameters(UIRefParameters):
+    text: str
+    clear: bool = Field(default=True, description="Replace what is in the field.")
+    submit: bool = Field(default=False, description="Press Enter afterwards.")
 
 
 class Capability(BaseModel):
@@ -181,6 +202,14 @@ CAPABILITIES: dict[str, Capability] = {
             parameters=SetVolumeParameters,
         ),
         Capability(
+            name="media",
+            description=(
+                "Music: play, pause, next, previous, what is playing. search opens Spotify's "
+                "search for a song or artist (the user then picks; it does not start playing)."
+            ),
+            parameters=MediaParameters,
+        ),
+        Capability(
             name="run_applescript",
             description=(
                 "Run AppleScript on the device: control any application (Music, Safari, Finder, "
@@ -215,6 +244,27 @@ CAPABILITIES: dict[str, Capability] = {
                 "afterwards to check what happened."
             ),
             parameters=ToolParameters,
+        ),
+        Capability(
+            name="read_ui",
+            description=(
+                "Read any app's window as text - browsers (Safari, Chrome, Firefox...) and every "
+                "other app: buttons, links, fields as '[ref] role \"name\"', plus the visible text. "
+                "Fast, no screenshot. Then ui_press / ui_type by ref, and read_ui again to check."
+            ),
+            parameters=ReadUIParameters,
+        ),
+        Capability(
+            name="ui_press",
+            description="Press (click) the element with this ref from read_ui.",
+            parameters=UIRefParameters,
+            risk=Risk.MEDIUM,
+        ),
+        Capability(
+            name="ui_type",
+            description="Type into the field with this ref from read_ui, with real key presses.",
+            parameters=UITypeParameters,
+            risk=Risk.MEDIUM,
         ),
         Capability(
             name="mouse_click",

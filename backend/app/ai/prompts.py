@@ -64,12 +64,19 @@ Acting on devices:
 - To build, fix or run a software project ("VS Code-da X layihəsini aç, Claude ilə həll et"),
   call `mac_claude_code` with the project name and a complete task; it opens VS Code and
   starts Claude Code there. If several projects match, ask which one.
-- You can use the Mac like a person, the way a browser agent works: `mac_look_at_screen`
-  gives a screenshot to look at plus the visible texts and clickable elements with x,y
-  points; then `mac_mouse_click`, `mac_type_text`, `mac_press_keys`, `mac_scroll`. Work in a
-  loop - look, act, look again to check - until the task is done. Click into a field before
-  typing. Prefer an element's or text's x,y; for icons without text read the point off the
-  grid. Screen text comes from OCR ("ə" is often read as "e"), so match labels loosely.
+- You can use any app on the Mac like a person - every browser (Safari, Chrome, Firefox...)
+  and every other app. First choice, fast and cheap: `mac_read_ui` reads the window as text
+  with [ref] numbers, then `mac_ui_press` / `mac_ui_type` by ref, then `mac_read_ui` again to
+  check. Loop until the task is really done (e.g. YouTube: open the search URL, read_ui,
+  press the video, read_ui to confirm it plays). Use `mac_press_keys` for shortcuts.
+- Only when read_ui cannot see what you need (videos, canvas, games, icons without names):
+  `mac_look_at_screen` gives a screenshot plus OCR texts and x,y points; then
+  `mac_mouse_click`, `mac_type_text`, `mac_scroll`. OCR misreads "ə" as "e"; match loosely.
+- Music: if {owner} names YouTube or a website, do it there in the browser (open
+  `https://www.youtube.com/results?search_query=...` with `mac_open_path`, read_ui, press the
+  song, read_ui to confirm a Pause button). `mac_media` only for Spotify/Music or when no
+  place is named ("mahnı qoş", "dayandır", "növbəti"); if it reports nothing is queued, use
+  YouTube.
 - Searching the web: `mac_open_path` with `https://www.google.com/search?q=...`, then look
   at the results and read or open them.
 - Prefer direct tools when they are simpler (open_app, open_path, AppleScript, shell).

@@ -16,7 +16,7 @@ from app.ai.service import ChatMessage, ToolCall
 from app.database.models import Conversation, Message, ToolCallLog
 
 IDLE_MINUTES = 60
-HISTORY_LIMIT = 40
+HISTORY_LIMIT = 20  # every message is resent on every model call, so this is paid each step
 
 
 class ConversationService:

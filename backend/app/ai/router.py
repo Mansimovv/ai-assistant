@@ -8,7 +8,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from app.ai.service import AIService, ChatMessage, ToolCall, ToolSpec
+from app.ai.service import AIService, ChatMessage, Completion, ToolCall, ToolSpec
 from app.devices.actions import DeviceActions
 from app.devices.capabilities import Risk
 from app.tools.registry import ToolRegistry
@@ -33,6 +33,8 @@ DESTRUCTIVE = re.compile(
     r"empty\s+trash|\bdelete\b.*\b(file|folder)\b",
     re.IGNORECASE,
 )
+
+STALE_SCREEN = '{"ok": true, "data": "An older look at the screen; the latest one is further down."}'
 
 
 def take_screenshot(payload: dict[str, Any]) -> str | None:
@@ -76,6 +78,24 @@ class AgentTurn(BaseModel):
     requested: list[RequestedAction] = Field(default_factory=list)
 
 
+class _TurnUsage:
+    """Tokens of every model call in one turn: one log line per user command."""
+
+    def __init__(self) -> None:
+        self.steps = self.input = self.cached = self.output = 0
+
+    def add(self, completion: Completion) -> None:
+        self.steps += 1
+        self.input += completion.input_tokens
+        self.cached += completion.cached_tokens
+        self.output += completion.output_tokens
+
+    def log(self) -> None:
+        logger.info(
+            "turn steps=%d tokens in=%d (cached=%d) out=%d", self.steps, self.input, self.cached, self.output
+        )
+
+
 class AIRouter:
     """Entry point for every user message.
 
@@ -104,13 +124,17 @@ class AIRouter:
         actions: list[ActionRecord] = []
         requested: list[RequestedAction] = []
 
+        usage = _TurnUsage()
+        screen_results: list[ChatMessage] = []
         for _ in range(self._max_steps):
             completion = await self._ai.complete(working, self.tool_specs())
+            usage.add(completion)
             assistant = ChatMessage(role="assistant", content=completion.text, tool_calls=completion.tool_calls)
             working.append(assistant)
             produced.append(assistant)
 
             if not completion.tool_calls:
+                usage.log()
                 return AgentTurn(
                     text=completion.text or "", actions=actions, messages=produced, requested=requested
                 )
@@ -118,23 +142,34 @@ class AIRouter:
             screenshots: list[ChatMessage] = []
             for call in completion.tool_calls:
                 payload, record = await self._run(call, requested)
-                if screenshot := take_screenshot(payload):
+                screenshot = take_screenshot(payload)
+                result = ChatMessage(role="tool", tool_call_id=call.id, content=json.dumps(payload))
+                if screenshot:
                     screenshots.append(
                         ChatMessage(role="user", content=SCREENSHOT_NOTE.format(tool=call.name), images=[screenshot])
                     )
-                result = ChatMessage(role="tool", tool_call_id=call.id, content=json.dumps(payload))
+                    screen_results.append(result)
                 working.append(result)
                 produced.append(result)
                 actions.append(record)
             if screenshots:
                 # Images cannot travel in a tool result, so they follow as a message the model
-                # sees. Only the latest screen matters, and each costs tokens: drop older ones.
-                working = [message for message in working if not message.images]
+                # sees. Only the latest screen matters, and each costs tokens on every later
+                # step: drop older images and shorten older screen readings (texts, elements).
+                stale = {id(message) for message in screen_results[:-1]}
+                working = [
+                    message.model_copy(update={"content": STALE_SCREEN}) if id(message) in stale else message
+                    for message in working
+                    if not message.images
+                ]
+                screen_results = screen_results[-1:]
                 working.append(screenshots[-1])
 
         # Step budget spent: ask for a final answer without tools so the model has to
         # summarise what actually happened instead of looping forever.
         completion = await self._ai.complete(working)
+        usage.add(completion)
+        usage.log()
         assistant = ChatMessage(role="assistant", content=completion.text)
         produced.append(assistant)
         return AgentTurn(text=completion.text or "", actions=actions, messages=produced, requested=requested)
